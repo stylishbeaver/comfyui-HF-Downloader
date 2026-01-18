@@ -185,12 +185,12 @@ class HFDownloader:
 
             if len(files) > 1:
                 if progress_callback:
-                    progress_callback('merge', 0, 1, 'Merging safetensor files...')
+                    progress_callback('merge', 0, len(files), 'Starting merge...')
 
-                self._merge_files(downloaded_paths, output_path)
+                self._merge_files(downloaded_paths, output_path, progress_callback)
 
                 if progress_callback:
-                    progress_callback('merge', 1, 1, 'Merge complete')
+                    progress_callback('merge', len(files), len(files), 'Merge complete')
             else:
                 # Single file - just copy from cache
                 if progress_callback:
@@ -250,7 +250,7 @@ class HFDownloader:
             logger.error(f"Error downloading {file_path}: {e.stderr}")
             raise
 
-    def _merge_files(self, file_paths: List[str], output_path: str):
+    def _merge_files(self, file_paths: List[str], output_path: str, progress_callback=None):
         """
         Merge multiple safetensor files into one
         Uses the proven 3-line merge approach
@@ -260,11 +260,15 @@ class HFDownloader:
 
             # Load all shards
             tensors = {}
-            for shard_path in sorted(file_paths):
-                logger.debug(f"Loading {shard_path}")
+            for idx, shard_path in enumerate(sorted(file_paths)):
+                logger.info(f"Loading shard {idx + 1}/{len(file_paths)}: {os.path.basename(shard_path)}")
+                if progress_callback:
+                    progress_callback('merge', idx, len(file_paths), f'Loading shard {idx + 1}/{len(file_paths)}...')
                 tensors.update(load_file(shard_path))
 
-            logger.info(f"Loaded {len(tensors)} tensors total")
+            logger.info(f"Loaded {len(tensors)} tensors total, saving merged file...")
+            if progress_callback:
+                progress_callback('merge', len(file_paths), len(file_paths) + 1, 'Saving merged file...')
 
             # Save as single file
             save_file(tensors, output_path)
