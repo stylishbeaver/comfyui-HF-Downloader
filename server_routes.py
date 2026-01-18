@@ -8,10 +8,14 @@ import asyncio
 import logging
 import traceback
 from aiohttp import web
+import server
 import folder_paths
 from .hf_downloader import HFDownloader
 
 logger = logging.getLogger(__name__)
+
+# Get ComfyUI server instance
+prompt_server = server.PromptServer.instance
 
 # Global state for download tasks
 download_tasks = {}
@@ -45,6 +49,7 @@ def get_model_dir(model_type: str) -> str:
         return os.path.join(folder_paths.models_dir, folder_name)
 
 
+@prompt_server.routes.post("/hf_downloader/scan")
 async def scan_repo_handler(request):
     """
     Scan a HuggingFace repo for safetensor files
@@ -87,6 +92,7 @@ async def scan_repo_handler(request):
         )
 
 
+@prompt_server.routes.post("/hf_downloader/download")
 async def download_model_handler(request):
     """
     Start downloading and merging a model
@@ -165,6 +171,7 @@ async def download_model_handler(request):
         )
 
 
+@prompt_server.routes.get("/hf_downloader/progress/{task_id}")
 async def get_progress_handler(request):
     """
     Get progress of a download task
@@ -263,21 +270,5 @@ async def run_download_task(
         }
 
 
-def register_routes():
-    """
-    Register API routes with ComfyUI server
-    Called on extension import
-    """
-    try:
-        from server import PromptServer
-        routes = PromptServer.instance.routes
-
-        routes.post("/hf_downloader/scan")(scan_repo_handler)
-        routes.post("/hf_downloader/download")(download_model_handler)
-        routes.get("/hf_downloader/progress/{task_id}")(get_progress_handler)
-
-        logger.info("HF Downloader routes registered successfully")
-
-    except Exception as e:
-        logger.error(f"Failed to register HF Downloader routes: {e}")
-        logger.error(traceback.format_exc())
+# Routes are registered via decorators when this module is imported
+logger.info("HF Downloader routes registered successfully")
