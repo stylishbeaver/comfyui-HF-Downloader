@@ -284,11 +284,18 @@ class HFDownloaderUI {
         const barEl = document.getElementById(`bar-${taskId}`);
         const msgEl = document.getElementById(`msg-${taskId}`);
 
+        // Debug logging
+        console.log(`[HF Downloader] Progress update for ${taskId}:`, progress);
+
         if (stageEl) {
             stageEl.textContent = progress.stage.toUpperCase();
-            // Make ERROR text red
+            // Color coding for status
             if (progress.status === "error") {
                 stageEl.style.color = "#ff6b6b";
+            } else if (progress.status === "completed") {
+                stageEl.style.color = "#4ade80";  // Green for success
+            } else {
+                stageEl.style.color = "";  // Reset to default
             }
         }
         if (msgEl) msgEl.textContent = progress.message;
