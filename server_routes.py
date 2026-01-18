@@ -41,6 +41,11 @@ def get_model_dir(model_type: str) -> str:
 
     folder_name = type_mapping.get(model_type, 'checkpoints')
 
+    # OVERRIDE: ComfyUI's folder_paths incorrectly maps diffusion_models to unet/
+    # But nodes actually look in diffusion_models/, so use direct path for this
+    if folder_name == 'diffusion_models':
+        return os.path.join(folder_paths.models_dir, 'diffusion_models')
+
     # Get directory from folder_paths
     if folder_name in folder_paths.folder_names_and_paths:
         return folder_paths.folder_names_and_paths[folder_name][0][0]
