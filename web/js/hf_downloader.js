@@ -538,8 +538,12 @@ app.registerExtension({
 
         // Add menu button with retry logic
         const addMenuButton = () => {
+            // Try multiple selectors to find the right menu location
+            const buttonGroup = document.querySelector(".comfyui-button-group");
             const menu = document.querySelector(".comfy-menu");
-            if (!menu) {
+            const targetElement = buttonGroup || menu;
+
+            if (!targetElement) {
                 console.warn("[HF Downloader] Menu not found, retrying...");
                 setTimeout(addMenuButton, 500);
                 return;
@@ -547,15 +551,16 @@ app.registerExtension({
 
             const hfButton = document.createElement("button");
             hfButton.textContent = "HF Downloader";
-            hfButton.className = "comfy-btn";
+            hfButton.style.cssText = "margin: 4px; padding: 4px 8px; background: #4a9eff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;";
             hfButton.onclick = () => {
                 if (!this.dialog) {
                     this.dialog = new HFDownloaderDialog();
                 }
                 this.dialog.show();
             };
-            menu.appendChild(hfButton);
-            console.log("[HF Downloader] Button added successfully");
+
+            targetElement.appendChild(hfButton);
+            console.log("[HF Downloader] Button added to:", targetElement.className);
         };
 
         addMenuButton();
