@@ -288,7 +288,7 @@ class HFDownloaderUI {
             stageEl.textContent = progress.stage.toUpperCase();
             // Make ERROR text red
             if (progress.status === "error") {
-                stageEl.classList.add("error");
+                stageEl.style.color = "#ff6b6b";
             }
         }
         if (msgEl) msgEl.textContent = progress.message;
@@ -518,10 +518,6 @@ function addStyles() {
         .progress-stage {
             color: #4a9eff;
             font-size: 12px;
-        }
-
-        .progress-stage.error {
-            color: #ff6b6b;
         }
 
         .progress-bar-container {
