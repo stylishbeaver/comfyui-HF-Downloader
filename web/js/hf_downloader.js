@@ -3,9 +3,9 @@
  * Downloads and auto-merges split safetensor files from HuggingFace repos
  */
 
-import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
-import { ComfyDialog } from "../../scripts/ui.js";
+import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
+import { ComfyDialog } from "../../../scripts/ui.js";
 
 class HFDownloaderDialog extends ComfyDialog {
     constructor() {
@@ -359,19 +359,7 @@ app.registerExtension({
     name: "HFDownloader",
 
     async setup() {
-        // Add menu button
-        const menu = document.querySelector(".comfy-menu");
-        const hfButton = document.createElement("button");
-        hfButton.textContent = "HF Downloader";
-        hfButton.onclick = () => {
-            if (!this.dialog) {
-                this.dialog = new HFDownloaderDialog();
-            }
-            this.dialog.show();
-        };
-        menu.appendChild(hfButton);
-
-        // Add styles
+        // Add styles first
         const style = document.createElement("style");
         style.textContent = `
             .hf-downloader-header {
@@ -547,5 +535,29 @@ app.registerExtension({
             }
         `;
         document.head.appendChild(style);
+
+        // Add menu button with retry logic
+        const addMenuButton = () => {
+            const menu = document.querySelector(".comfy-menu");
+            if (!menu) {
+                console.warn("[HF Downloader] Menu not found, retrying...");
+                setTimeout(addMenuButton, 500);
+                return;
+            }
+
+            const hfButton = document.createElement("button");
+            hfButton.textContent = "HF Downloader";
+            hfButton.className = "comfy-btn";
+            hfButton.onclick = () => {
+                if (!this.dialog) {
+                    this.dialog = new HFDownloaderDialog();
+                }
+                this.dialog.show();
+            };
+            menu.appendChild(hfButton);
+            console.log("[HF Downloader] Button added successfully");
+        };
+
+        addMenuButton();
     }
 });
