@@ -62,16 +62,31 @@ class HFDownloader:
             result = []
             for folder, files_list in models.items():
                 split_info = self._detect_splits(files_list)
-                suggested_name = self._suggest_name(repo_id, folder, files_list, split_info)
 
-                result.append({
-                    'path': folder,
-                    'files': sorted(files_list),
-                    'is_split': split_info is not None,
-                    'split_info': split_info,
-                    'file_count': len(files_list),
-                    'suggested_name': suggested_name
-                })
+                # Special handling for root folder with multiple non-split files
+                # Each should be a separate selectable entry
+                if folder == 'root' and not split_info and len(files_list) > 1:
+                    for single_file in files_list:
+                        suggested_name = self._suggest_name(repo_id, folder, [single_file], None)
+                        result.append({
+                            'path': folder,
+                            'files': [single_file],
+                            'is_split': False,
+                            'split_info': None,
+                            'file_count': 1,
+                            'suggested_name': suggested_name
+                        })
+                else:
+                    # Normal grouped handling (subfolders or split files)
+                    suggested_name = self._suggest_name(repo_id, folder, files_list, split_info)
+                    result.append({
+                        'path': folder,
+                        'files': sorted(files_list),
+                        'is_split': split_info is not None,
+                        'split_info': split_info,
+                        'file_count': len(files_list),
+                        'suggested_name': suggested_name
+                    })
 
             logger.info(f"Found {len(result)} model group(s) in repo")
             return result
@@ -104,14 +119,15 @@ class HFDownloader:
         Suggest an output filename based on repo structure
 
         Priority:
-        1. Use folder name if not 'root'
-        2. Use repo name
-        3. Extract base name from split files
+        1. For root files: use actual filename (without .safetensors)
+        2. For folders: check config.json for _name_or_path, else use folder name
+        3. For split files: extract base name from pattern
+        4. Fallback: repo name
         """
-        # If folder has a meaningful name, use it
-        if folder != 'root' and folder:
-            # Use last part of folder path
-            name = folder.split('/')[-1]
+        # Root folder with single file - use the actual filename
+        if folder == 'root' and len(files) == 1:
+            # Strip .safetensors extension
+            name = files[0].replace('.safetensors', '')
             # Clean up common suffixes
             name = re.sub(r'[-_](fp16|fp32|bf16|bnb|4bit|8bit)$', '', name, flags=re.IGNORECASE)
             return name
@@ -121,11 +137,63 @@ class HFDownloader:
             # Remove the split suffix to get base name
             match = re.search(r'^(.+?)-\d+-of-\d+\.safetensors$', files[0])
             if match:
-                return match.group(1)
+                base_name = match.group(1)
+                # For folders, also check config.json for better naming
+                if folder != 'root':
+                    config_name = self._get_name_from_config(repo_id, folder)
+                    if config_name:
+                        return config_name
+                return base_name
+
+        # If folder has a meaningful name, try config.json first
+        if folder != 'root' and folder:
+            # Try to get name from config.json
+            config_name = self._get_name_from_config(repo_id, folder)
+            if config_name:
+                return config_name
+
+            # Fall back to folder name
+            name = folder.split('/')[-1]
+            # Clean up common suffixes
+            name = re.sub(r'[-_](fp16|fp32|bf16|bnb|4bit|8bit)$', '', name, flags=re.IGNORECASE)
+            return name
 
         # Fall back to repo name
         repo_name = repo_id.split('/')[-1]
         return repo_name
+
+    def _get_name_from_config(self, repo_id: str, folder: str) -> Optional[str]:
+        """
+        Try to extract model name from config.json in the folder
+        Returns the _name_or_path value or model_type if found
+        """
+        try:
+            import json
+            config_path = f"{folder}/config.json"
+
+            # Download and parse config.json
+            from huggingface_hub import hf_hub_download
+            local_config = hf_hub_download(repo_id=repo_id, filename=config_path)
+
+            with open(local_config, 'r') as f:
+                config = json.load(f)
+
+            # Try _name_or_path first (e.g., "google/t5-v1_1-xxl")
+            if '_name_or_path' in config:
+                name = config['_name_or_path']
+                # Extract just the model name (e.g., "t5-v1_1-xxl" from "google/t5-v1_1-xxl")
+                if '/' in name:
+                    return name.split('/')[-1]
+                return name
+
+            # Fallback to model_type if available
+            if 'model_type' in config:
+                return config['model_type']
+
+        except Exception as e:
+            logger.debug(f"Could not read config.json from {folder}: {e}")
+
+        return None
 
     def download_and_merge(
         self,
