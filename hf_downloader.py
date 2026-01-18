@@ -212,7 +212,7 @@ class HFDownloader:
     def _check_hf_cli(self) -> bool:
         """Check if HF CLI is installed"""
         try:
-            subprocess.run(['hf', '--version'], capture_output=True, check=True)
+            subprocess.run(['hf', 'version'], capture_output=True, check=True)
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             return False
