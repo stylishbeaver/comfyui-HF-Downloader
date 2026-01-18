@@ -309,6 +309,8 @@ class HFDownloaderUI {
         const actionsDiv = document.getElementById(`actions-${taskId}`);
         if (!actionsDiv) return;
 
+        // Clear existing buttons to prevent duplicates
+        actionsDiv.innerHTML = "";
         actionsDiv.style.display = "flex";
         actionsDiv.style.gap = "10px";
 
