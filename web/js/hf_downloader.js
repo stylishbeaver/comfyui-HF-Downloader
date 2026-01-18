@@ -5,12 +5,13 @@
 
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
-import { ComfyDialog } from "../../../scripts/ui.js";
 
-class HFDownloaderDialog extends ComfyDialog {
+class HFDownloaderDialog {
     constructor() {
-        super();
-        this.element = $el("div.comfy-modal", { parent: document.body }, [
+        this.element = $el("div.comfy-modal", {
+            parent: document.body,
+            style: { display: "none" }
+        }, [
             $el("div.comfy-modal-content", [
                 $el("div.hf-downloader-header", [
                     $el("h2", {}, ["HuggingFace Model Downloader"]),
@@ -362,6 +363,30 @@ app.registerExtension({
         // Add styles first
         const style = document.createElement("style");
         style.textContent = `
+            .comfy-modal {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.7);
+                z-index: 9999;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .comfy-modal-content {
+                background: #1a1a1a;
+                border: 1px solid #444;
+                border-radius: 8px;
+                padding: 20px;
+                max-width: 900px;
+                max-height: 90vh;
+                overflow-y: auto;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+            }
+
             .hf-downloader-header {
                 display: flex;
                 justify-content: space-between;
@@ -538,13 +563,17 @@ app.registerExtension({
 
         // Add menu button with retry logic
         const addMenuButton = () => {
-            const buttonGroup = document.querySelector(".comfyui-button-group");
+            const parentContainer = document.querySelector(".comfyui-button-group")?.parentElement;
 
-            if (!buttonGroup) {
-                console.warn("[HF Downloader] .comfyui-button-group not found, retrying...");
+            if (!parentContainer) {
+                console.warn("[HF Downloader] Parent container not found, retrying...");
                 setTimeout(addMenuButton, 500);
                 return;
             }
+
+            // Create wrapper div like other button groups
+            const buttonGroupDiv = document.createElement("div");
+            buttonGroupDiv.className = "comfyui-button-group";
 
             const hfButton = document.createElement("button");
             hfButton.textContent = "HF Downloader";
@@ -552,14 +581,18 @@ app.registerExtension({
             hfButton.className = "comfyui-button";
             hfButton.setAttribute("aria-label", "Download HuggingFace Models");
             hfButton.onclick = () => {
+                console.log("[HF Downloader] Button clicked");
                 if (!this.dialog) {
+                    console.log("[HF Downloader] Creating dialog");
                     this.dialog = new HFDownloaderDialog();
                 }
+                console.log("[HF Downloader] Showing dialog");
                 this.dialog.show();
             };
 
-            buttonGroup.appendChild(hfButton);
-            console.log("[HF Downloader] Button added to .comfyui-button-group");
+            buttonGroupDiv.appendChild(hfButton);
+            parentContainer.appendChild(buttonGroupDiv);
+            console.log("[HF Downloader] Button group added successfully");
         };
 
         addMenuButton();
