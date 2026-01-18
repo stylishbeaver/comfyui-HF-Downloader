@@ -71,29 +71,55 @@ class HFDownloaderUI {
                     <button class="hf-close-button" id="hf-close-modal">×</button>
                 </div>
 
-                <div class="hf-input-section">
-                    <input type="text" id="hf-repo-input" placeholder="Enter HuggingFace repo (e.g., username/model-name)" />
-                    <button id="hf-scan-button">Scan Repo</button>
+                <div class="hf-tabs">
+                    <button class="hf-tab active" data-tab="download">Download</button>
+                    <button class="hf-tab" data-tab="manage">Manage Files</button>
                 </div>
 
-                <div class="hf-models-section" id="hf-models-section" style="display: none;">
-                    <h3>Detected Models:</h3>
-                    <table class="hf-models-table">
-                        <thead>
-                            <tr>
-                                <th>Model</th>
-                                <th>Type</th>
-                                <th>Files</th>
-                                <th>Output Name</th>
-                                <th>Destination</th>
-                                <th>Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="hf-models-tbody"></tbody>
-                    </table>
+                <div id="hf-tab-download" class="hf-tab-content active">
+                    <div class="hf-input-section">
+                        <input type="text" id="hf-repo-input" placeholder="Enter HuggingFace repo (e.g., username/model-name)" />
+                        <button id="hf-scan-button">Scan Repo</button>
+                    </div>
+
+                    <div class="hf-models-section" id="hf-models-section" style="display: none;">
+                        <h3>Detected Models:</h3>
+                        <table class="hf-models-table">
+                            <thead>
+                                <tr>
+                                    <th>Model</th>
+                                    <th>Type</th>
+                                    <th>Files</th>
+                                    <th>Output Name</th>
+                                    <th>Destination</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="hf-models-tbody"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="hf-progress-section" id="hf-progress-section"></div>
                 </div>
 
-                <div class="hf-progress-section" id="hf-progress-section"></div>
+                <div id="hf-tab-manage" class="hf-tab-content">
+                    <div class="hf-manage-controls">
+                        <label>Filter by type:</label>
+                        <select id="hf-file-type-filter">
+                            <option value="checkpoint">Checkpoints</option>
+                            <option value="lora">LoRAs</option>
+                            <option value="vae">VAE</option>
+                            <option value="diffusion_model">Diffusion Models</option>
+                            <option value="text_encoder">Text Encoders</option>
+                            <option value="upscale_model">Upscale Models</option>
+                            <option value="controlnet">ControlNet</option>
+                            <option value="embedding">Embeddings</option>
+                            <option value="clip">CLIP</option>
+                        </select>
+                        <button id="hf-refresh-files">Refresh</button>
+                    </div>
+                    <div id="hf-files-list"></div>
+                </div>
             </div>
         `;
 
@@ -104,10 +130,21 @@ class HFDownloaderUI {
         this.modelsSection = this.modal.querySelector("#hf-models-section");
         this.modelsTbody = this.modal.querySelector("#hf-models-tbody");
         this.progressSection = this.modal.querySelector("#hf-progress-section");
+        this.fileTypeFilter = this.modal.querySelector("#hf-file-type-filter");
+        this.refreshFilesButton = this.modal.querySelector("#hf-refresh-files");
+        this.filesList = this.modal.querySelector("#hf-files-list");
 
         // Setup event listeners
         this.closeButton.onclick = () => this.closeModal();
         this.scanButton.onclick = () => this.scanRepo();
+        this.refreshFilesButton.onclick = () => this.loadFiles();
+        this.fileTypeFilter.onchange = () => this.loadFiles();
+
+        // Tab switching
+        this.modal.querySelectorAll(".hf-tab").forEach(tab => {
+            tab.onclick = () => this.switchTab(tab.dataset.tab);
+        });
+
         this.repoInput.addEventListener("keypress", (e) => {
             if (e.key === "Enter") this.scanRepo();
         });
@@ -255,11 +292,25 @@ class HFDownloaderUI {
                 <div class="progress-bar" id="bar-${taskId}"></div>
             </div>
             <div class="progress-message" id="msg-${taskId}"></div>
-            <div class="progress-actions" id="actions-${taskId}" style="display: none; margin-top: 10px;"></div>
+            <div class="progress-actions" id="actions-${taskId}" style="display: flex; gap: 10px; margin-top: 10px;">
+                <button class="action-btn abort-btn" id="abort-${taskId}">Abort</button>
+            </div>
         `;
 
         this.progressSection.appendChild(progressDiv);
         this.currentTasks.set(taskId, { div: progressDiv, modelName });
+
+        // Add abort button handler
+        const abortBtn = document.getElementById(`abort-${taskId}`);
+        if (abortBtn) {
+            abortBtn.onclick = async () => {
+                if (confirm(`Abort download of ${modelName}?`)) {
+                    abortBtn.disabled = true;
+                    abortBtn.textContent = "Aborting...";
+                    await this.abortDownload(taskId);
+                }
+            };
+        }
 
         const pollInterval = setInterval(async () => {
             try {
@@ -268,7 +319,7 @@ class HFDownloaderUI {
 
                 this.updateProgress(taskId, progress);
 
-                if (progress.status === "completed" || progress.status === "error") {
+                if (progress.status === "completed" || progress.status === "error" || progress.status === "cancelled") {
                     clearInterval(pollInterval);
                     this.addProgressActions(taskId, progress.status, modelName);
                 }
@@ -347,6 +398,120 @@ class HFDownloaderUI {
             progressDiv.remove();
         }
         this.currentTasks.delete(taskId);
+    }
+
+    switchTab(tabName) {
+        // Update tab buttons
+        this.modal.querySelectorAll(".hf-tab").forEach(tab => {
+            tab.classList.toggle("active", tab.dataset.tab === tabName);
+        });
+
+        // Update tab contents
+        this.modal.querySelectorAll(".hf-tab-content").forEach(content => {
+            content.classList.toggle("active", content.id === `hf-tab-${tabName}`);
+        });
+
+        // Load files when switching to manage tab
+        if (tabName === "manage") {
+            this.loadFiles();
+        }
+    }
+
+    async loadFiles() {
+        const modelType = this.fileTypeFilter.value;
+        this.filesList.innerHTML = '<div class="loading">Loading files...</div>';
+
+        try {
+            const response = await api.fetchApi(`/hf_downloader/files/${modelType}`);
+            const data = await response.json();
+
+            if (!data.files || data.files.length === 0) {
+                this.filesList.innerHTML = '<div class="no-files">No files found in this category</div>';
+                return;
+            }
+
+            // Build file list table
+            let html = `
+                <table class="hf-files-table">
+                    <thead>
+                        <tr>
+                            <th>File Name</th>
+                            <th>Size</th>
+                            <th>Modified</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            for (const file of data.files) {
+                const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                const date = new Date(file.modified * 1000).toLocaleString();
+
+                html += `
+                    <tr>
+                        <td title="${file.path}">${file.name}</td>
+                        <td>${sizeMB} MB</td>
+                        <td>${date}</td>
+                        <td>
+                            <button class="delete-file-btn" data-filepath="${file.path}" data-filename="${file.name}">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            }
+
+            html += '</tbody></table>';
+            this.filesList.innerHTML = html;
+
+            // Attach delete handlers
+            this.filesList.querySelectorAll('.delete-file-btn').forEach(btn => {
+                btn.onclick = () => this.deleteFile(btn.dataset.filepath, btn.dataset.filename);
+            });
+
+        } catch (error) {
+            console.error("[HF Downloader] Error loading files:", error);
+            this.filesList.innerHTML = '<div class="error">Error loading files. Check console for details.</div>';
+        }
+    }
+
+    async deleteFile(filepath, filename) {
+        if (!confirm(`Delete ${filename}?\n\nThis cannot be undone.`)) {
+            return;
+        }
+
+        try {
+            const response = await api.fetchApi('/hf_downloader/files', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filepath })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                // Reload file list
+                this.loadFiles();
+                console.log(`[HF Downloader] Deleted: ${filename}`);
+            } else {
+                alert(`Error deleting file: ${data.error}`);
+            }
+        } catch (error) {
+            console.error("[HF Downloader] Error deleting file:", error);
+            alert('Error deleting file. Check console for details.');
+        }
+    }
+
+    async abortDownload(taskId) {
+        try {
+            const response = await api.fetchApi(`/hf_downloader/abort/${taskId}`, {
+                method: 'POST'
+            });
+
+            const data = await response.json();
+            console.log(`[HF Downloader] Abort response:`, data);
+        } catch (error) {
+            console.error("[HF Downloader] Error aborting download:", error);
+        }
     }
 }
 
@@ -583,6 +748,136 @@ function addStyles() {
 
         .clear-btn:hover {
             background: #555;
+        }
+
+        .hf-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #444;
+        }
+
+        .hf-tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .hf-tab:hover {
+            color: #fff;
+        }
+
+        .hf-tab.active {
+            color: #4a9eff;
+            border-bottom-color: #4a9eff;
+        }
+
+        .hf-tab-content {
+            display: none;
+        }
+
+        .hf-tab-content.active {
+            display: block;
+        }
+
+        .hf-manage-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-radius: 4px;
+        }
+
+        .hf-manage-controls label {
+            font-weight: bold;
+        }
+
+        #hf-file-type-filter {
+            padding: 8px;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #fff;
+            border-radius: 4px;
+            flex: 1;
+        }
+
+        #hf-refresh-files {
+            padding: 8px 16px;
+            background: #4a9eff;
+            border: none;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #hf-refresh-files:hover {
+            background: #3a8eef;
+        }
+
+        .hf-files-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #2a2a2a;
+        }
+
+        .hf-files-table th,
+        .hf-files-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #444;
+        }
+
+        .hf-files-table th {
+            background: #1a1a1a;
+            font-weight: bold;
+            position: sticky;
+            top: 0;
+        }
+
+        .hf-files-table tr:hover {
+            background: #333;
+        }
+
+        .delete-file-btn {
+            padding: 6px 12px;
+            background: #ff4444;
+            border: none;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .delete-file-btn:hover {
+            background: #cc0000;
+        }
+
+        .loading, .no-files, .error {
+            padding: 20px;
+            text-align: center;
+            color: #888;
+        }
+
+        .error {
+            color: #ff6b6b;
+        }
+
+        .abort-btn {
+            background: #ff6b6b !important;
+        }
+
+        .abort-btn:hover {
+            background: #ff4444 !important;
+        }
+
+        .abort-btn:disabled {
+            background: #666 !important;
+            cursor: not-allowed;
         }
     `;
     document.head.appendChild(style);

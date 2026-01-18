@@ -275,5 +275,134 @@ async def run_download_task(
         }
 
 
+@prompt_server.routes.post("/hf_downloader/abort/{task_id}")
+async def abort_download_handler(request):
+    """
+    Abort a running download task
+
+    POST /hf_downloader/abort/<task_id>
+    """
+    try:
+        task_id = request.match_info['task_id']
+
+        if task_id not in download_tasks:
+            return web.json_response(
+                {'error': 'Task not found'},
+                status=404
+            )
+
+        task = download_tasks[task_id]
+
+        if not task.done():
+            task.cancel()
+            download_progress[task_id] = {
+                'status': 'cancelled',
+                'stage': 'cancelled',
+                'current': 0,
+                'total': 0,
+                'message': 'Download cancelled by user'
+            }
+            logger.info(f"Cancelled download task: {task_id}")
+
+        return web.json_response({
+            'success': True,
+            'message': 'Download cancelled'
+        })
+
+    except Exception as e:
+        logger.error(f"Error aborting download: {e}")
+        return web.json_response(
+            {'error': str(e)},
+            status=500
+        )
+
+
+@prompt_server.routes.get("/hf_downloader/files/{model_type}")
+async def list_files_handler(request):
+    """
+    List downloaded model files by type
+
+    GET /hf_downloader/files/<model_type>
+    """
+    try:
+        model_type = request.match_info['model_type']
+        model_dir = get_model_dir(model_type)
+
+        if not os.path.exists(model_dir):
+            return web.json_response({'files': []})
+
+        files = []
+        for filename in os.listdir(model_dir):
+            if filename.endswith('.safetensors'):
+                filepath = os.path.join(model_dir, filename)
+                stat = os.stat(filepath)
+                files.append({
+                    'name': filename,
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime,
+                    'path': filepath
+                })
+
+        # Sort by modified time, newest first
+        files.sort(key=lambda x: x['modified'], reverse=True)
+
+        return web.json_response({'files': files})
+
+    except Exception as e:
+        logger.error(f"Error listing files: {e}")
+        return web.json_response(
+            {'error': str(e)},
+            status=500
+        )
+
+
+@prompt_server.routes.delete("/hf_downloader/files")
+async def delete_file_handler(request):
+    """
+    Delete a model file
+
+    DELETE /hf_downloader/files
+    Body: { "filepath": "/path/to/file.safetensors" }
+    """
+    try:
+        data = await request.json()
+        filepath = data.get('filepath')
+
+        if not filepath:
+            return web.json_response(
+                {'error': 'filepath is required'},
+                status=400
+            )
+
+        # Security: ensure file is in models directory
+        models_dir = folder_paths.models_dir
+        if not os.path.abspath(filepath).startswith(os.path.abspath(models_dir)):
+            return web.json_response(
+                {'error': 'Invalid file path'},
+                status=403
+            )
+
+        if not os.path.exists(filepath):
+            return web.json_response(
+                {'error': 'File not found'},
+                status=404
+            )
+
+        os.remove(filepath)
+        logger.info(f"Deleted file: {filepath}")
+
+        return web.json_response({
+            'success': True,
+            'message': 'File deleted successfully'
+        })
+
+    except Exception as e:
+        logger.error(f"Error deleting file: {e}")
+        return web.json_response(
+            {'error': str(e)},
+            status=500
+        )
+
+
 # Routes are registered via decorators when this module is imported
 logger.info("HF Downloader routes registered successfully")
