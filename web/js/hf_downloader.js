@@ -40,8 +40,15 @@ function addMenuButton() {
         }
     };
 
-    buttonGroup.appendChild(hfButton);
-    console.log("[HF Downloader] Button added to .comfyui-button-group");
+    // Create wrapper div (like ComfyUI Manager does)
+    const buttonGroupWrapper = document.createElement("div");
+    buttonGroupWrapper.className = "comfyui-button-group";
+    buttonGroupWrapper.appendChild(hfButton);
+
+    // Append to parent container
+    const parent = buttonGroup.parentElement;
+    parent.appendChild(buttonGroupWrapper);
+    console.log("[HF Downloader] Button group added to parent container");
 }
 
 // Main UI class
@@ -184,7 +191,7 @@ class HFDownloaderUI {
                         <option value="embedding">Embedding</option>
                         <option value="clip">CLIP</option>
                         <option value="controlnet">ControlNet</option>
-                        <option value="diffusion_model">Diffusion</option>
+                        <option value="diffusion_model">Diffusion Models</option>
                         <option value="text_encoder">Text Encoder</option>
                     </select>
                 </td>
@@ -248,6 +255,7 @@ class HFDownloaderUI {
                 <div class="progress-bar" id="bar-${taskId}"></div>
             </div>
             <div class="progress-message" id="msg-${taskId}"></div>
+            <div class="progress-actions" id="actions-${taskId}" style="display: none; margin-top: 10px;"></div>
         `;
 
         this.progressSection.appendChild(progressDiv);
@@ -262,12 +270,7 @@ class HFDownloaderUI {
 
                 if (progress.status === "completed" || progress.status === "error") {
                     clearInterval(pollInterval);
-
-                    if (progress.status === "completed") {
-                        alert(`Download completed: ${modelName}`);
-                    } else {
-                        alert(`Download failed: ${progress.message}`);
-                    }
+                    this.addProgressActions(taskId, progress.status, modelName);
                 }
             } catch (error) {
                 console.error("Error polling progress:", error);
@@ -281,7 +284,13 @@ class HFDownloaderUI {
         const barEl = document.getElementById(`bar-${taskId}`);
         const msgEl = document.getElementById(`msg-${taskId}`);
 
-        if (stageEl) stageEl.textContent = progress.stage.toUpperCase();
+        if (stageEl) {
+            stageEl.textContent = progress.stage.toUpperCase();
+            // Make ERROR text red
+            if (progress.status === "error") {
+                stageEl.classList.add("error");
+            }
+        }
         if (msgEl) msgEl.textContent = progress.message;
 
         if (barEl && progress.total > 0) {
@@ -294,6 +303,41 @@ class HFDownloaderUI {
                 barEl.classList.add("error");
             }
         }
+    }
+
+    addProgressActions(taskId, status, modelName) {
+        const actionsDiv = document.getElementById(`actions-${taskId}`);
+        if (!actionsDiv) return;
+
+        actionsDiv.style.display = "flex";
+        actionsDiv.style.gap = "10px";
+
+        // Always add clear button
+        const clearBtn = document.createElement("button");
+        clearBtn.textContent = "Clear";
+        clearBtn.className = "action-btn clear-btn";
+        clearBtn.onclick = () => this.clearProgress(taskId);
+        actionsDiv.appendChild(clearBtn);
+
+        // Add retry button only on error
+        if (status === "error") {
+            const taskData = this.currentTasks.get(taskId);
+            const retryBtn = document.createElement("button");
+            retryBtn.textContent = "Retry";
+            retryBtn.className = "action-btn retry-btn";
+            retryBtn.onclick = () => {
+                alert("Retry functionality: Please use the download button above to retry the download.");
+            };
+            actionsDiv.insertBefore(retryBtn, clearBtn);
+        }
+    }
+
+    clearProgress(taskId) {
+        const progressDiv = document.getElementById(`progress-${taskId}`);
+        if (progressDiv) {
+            progressDiv.remove();
+        }
+        this.currentTasks.delete(taskId);
     }
 }
 
@@ -476,6 +520,10 @@ function addStyles() {
             font-size: 12px;
         }
 
+        .progress-stage.error {
+            color: #ff6b6b;
+        }
+
         .progress-bar-container {
             width: 100%;
             height: 20px;
@@ -503,6 +551,33 @@ function addStyles() {
         .progress-message {
             font-size: 13px;
             color: #aaa;
+        }
+
+        .action-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+        }
+
+        .retry-btn {
+            background: #4a9eff;
+            color: #fff;
+        }
+
+        .retry-btn:hover {
+            background: #3a8eef;
+        }
+
+        .clear-btn {
+            background: #666;
+            color: #fff;
+        }
+
+        .clear-btn:hover {
+            background: #555;
         }
     `;
     document.head.appendChild(style);
