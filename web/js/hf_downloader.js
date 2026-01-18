@@ -538,20 +538,19 @@ app.registerExtension({
 
         // Add menu button with retry logic
         const addMenuButton = () => {
-            // Try multiple selectors to find the right menu location
             const buttonGroup = document.querySelector(".comfyui-button-group");
-            const menu = document.querySelector(".comfy-menu");
-            const targetElement = buttonGroup || menu;
 
-            if (!targetElement) {
-                console.warn("[HF Downloader] Menu not found, retrying...");
+            if (!buttonGroup) {
+                console.warn("[HF Downloader] .comfyui-button-group not found, retrying...");
                 setTimeout(addMenuButton, 500);
                 return;
             }
 
             const hfButton = document.createElement("button");
             hfButton.textContent = "HF Downloader";
-            hfButton.style.cssText = "margin: 4px; padding: 4px 8px; background: #4a9eff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;";
+            hfButton.title = "Download HuggingFace Models";
+            hfButton.className = "comfyui-button";
+            hfButton.setAttribute("aria-label", "Download HuggingFace Models");
             hfButton.onclick = () => {
                 if (!this.dialog) {
                     this.dialog = new HFDownloaderDialog();
@@ -559,8 +558,8 @@ app.registerExtension({
                 this.dialog.show();
             };
 
-            targetElement.appendChild(hfButton);
-            console.log("[HF Downloader] Button added to:", targetElement.className);
+            buttonGroup.appendChild(hfButton);
+            console.log("[HF Downloader] Button added to .comfyui-button-group");
         };
 
         addMenuButton();
