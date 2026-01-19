@@ -3,14 +3,18 @@ ComfyUI HuggingFace Downloader
 Downloads and auto-merges split safetensor files from HuggingFace repositories
 """
 
-# Import server_routes to register routes via decorators
-from . import server_routes
-
 # Extension metadata
 WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
-__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
-print("[HF Downloader] Extension loaded successfully")
+# Import server_routes to register routes via decorators
+# Only import when running in ComfyUI environment (not during tests)
+try:
+    from . import server_routes
+
+    print("[HF Downloader] Extension loaded successfully")
+except ImportError:
+    pass  # Running in test environment or standalone
