@@ -30,21 +30,24 @@ class HFDownloader:
 
         Returns list of model groups with metadata:
         - path: subfolder path
-        - files: list of filenames
+        - files: list of filenames with metadata (name, size, precision)
         - is_split: whether files are split into shards
         - file_count: number of files
-        - total_size: estimated total size in bytes
+        - total_size: total size in bytes
         - suggested_name: suggested output filename
         """
         try:
             logger.info(f"Scanning HuggingFace repo: {repo_id}")
-            files = self.api.list_repo_files(repo_id)
+
+            # Use list_files_info to get file metadata including sizes
+            files_info = list(self.api.list_files_info(repo_id))
 
             # Group safetensor files by subfolder
             models = {}
-            file_info = {}
+            file_metadata = {}
 
-            for f in files:
+            for file_info in files_info:
+                f = file_info.rfilename
                 if f.endswith('.safetensors'):
                     parts = f.split('/')
                     if len(parts) > 1:
@@ -56,36 +59,56 @@ class HFDownloader:
 
                     if folder not in models:
                         models[folder] = []
-                    models[folder].append(filename)
+
+                    # Extract precision from filename
+                    precision = self._extract_precision(filename)
+
+                    # Store file metadata
+                    file_meta = {
+                        'name': filename,
+                        'size': file_info.size,
+                        'precision': precision
+                    }
+                    models[folder].append(file_meta)
+                    file_metadata[f] = file_info.size
 
             # Analyze each group and detect splits
             result = []
             for folder, files_list in models.items():
-                split_info = self._detect_splits(files_list)
+                # Extract just filenames for split detection
+                filenames = [f['name'] for f in files_list]
+                split_info = self._detect_splits(filenames)
 
                 # Special handling for root folder with multiple non-split files
                 # Each should be a separate selectable entry
                 if folder == 'root' and not split_info and len(files_list) > 1:
-                    for single_file in files_list:
-                        suggested_name = self._suggest_name(repo_id, folder, [single_file], None)
+                    for single_file_meta in files_list:
+                        suggested_name = self._suggest_name(repo_id, folder, [single_file_meta['name']], None)
                         result.append({
                             'path': folder,
-                            'files': [single_file],
+                            'files': [single_file_meta],
                             'is_split': False,
                             'split_info': None,
                             'file_count': 1,
-                            'suggested_name': suggested_name
+                            'total_size': single_file_meta['size'],
+                            'suggested_name': suggested_name,
+                            'precision': single_file_meta['precision']
                         })
                 else:
                     # Normal grouped handling (subfolders or split files)
-                    suggested_name = self._suggest_name(repo_id, folder, files_list, split_info)
+                    suggested_name = self._suggest_name(repo_id, folder, filenames, split_info)
+                    total_size = sum(f['size'] for f in files_list)
+                    # For grouped files, precision is from the first file (they should match)
+                    precision = files_list[0]['precision'] if files_list else None
                     result.append({
                         'path': folder,
-                        'files': sorted(files_list),
+                        'files': sorted(files_list, key=lambda x: x['name']),
                         'is_split': split_info is not None,
                         'split_info': split_info,
                         'file_count': len(files_list),
-                        'suggested_name': suggested_name
+                        'total_size': total_size,
+                        'suggested_name': suggested_name,
+                        'precision': precision
                     })
 
             logger.info(f"Found {len(result)} model group(s) in repo")
@@ -94,6 +117,18 @@ class HFDownloader:
         except Exception as e:
             logger.error(f"Error scanning repo {repo_id}: {e}")
             raise
+
+    def _extract_precision(self, filename: str) -> Optional[str]:
+        """
+        Extract precision type from filename (fp16, fp32, bf16, etc.)
+        Returns precision string if found, None otherwise
+        """
+        # Common precision patterns
+        precision_pattern = re.compile(r'[-_](fp16|fp32|bf16|fp8|int8|int4|bnb[-_]?4bit|bnb[-_]?8bit)', re.IGNORECASE)
+        match = precision_pattern.search(filename)
+        if match:
+            return match.group(1).lower().replace('_', '-')
+        return None
 
     def _detect_splits(self, files: List[str]) -> Optional[Dict]:
         """
@@ -119,17 +154,15 @@ class HFDownloader:
         Suggest an output filename based on repo structure
 
         Priority:
-        1. For root files: use actual filename (without .safetensors)
+        1. For root files: use actual filename (without .safetensors, preserving precision)
         2. For folders: check config.json for _name_or_path, else use folder name
         3. For split files: extract base name from pattern
         4. Fallback: repo name
         """
         # Root folder with single file - use the actual filename
         if folder == 'root' and len(files) == 1:
-            # Strip .safetensors extension
+            # Strip .safetensors extension but keep precision suffix
             name = files[0].replace('.safetensors', '')
-            # Clean up common suffixes
-            name = re.sub(r'[-_](fp16|fp32|bf16|bnb|4bit|8bit)$', '', name, flags=re.IGNORECASE)
             return name
 
         # If split files, try to extract base name
@@ -152,10 +185,8 @@ class HFDownloader:
             if config_name:
                 return config_name
 
-            # Fall back to folder name
+            # Fall back to folder name (preserve precision suffix)
             name = folder.split('/')[-1]
-            # Clean up common suffixes
-            name = re.sub(r'[-_](fp16|fp32|bf16|bnb|4bit|8bit)$', '', name, flags=re.IGNORECASE)
             return name
 
         # Fall back to repo name

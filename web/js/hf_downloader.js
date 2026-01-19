@@ -90,6 +90,8 @@ class HFDownloaderUI {
                                     <th>Model</th>
                                     <th>Type</th>
                                     <th>Files</th>
+                                    <th>Size</th>
+                                    <th>Precision</th>
                                     <th>Output Name</th>
                                     <th>Destination</th>
                                     <th>Action</th>
@@ -198,11 +200,21 @@ class HFDownloaderUI {
         }
     }
 
+    formatSize(bytes) {
+        if (!bytes) return 'N/A';
+        const gb = bytes / (1024 * 1024 * 1024);
+        if (gb >= 1) {
+            return `${gb.toFixed(2)} GB`;
+        }
+        const mb = bytes / (1024 * 1024);
+        return `${mb.toFixed(2)} MB`;
+    }
+
     renderModels(repoId, models) {
         this.modelsTbody.innerHTML = "";
 
         if (models.length === 0) {
-            this.modelsTbody.innerHTML = '<tr><td colspan="6">No safetensor files found</td></tr>';
+            this.modelsTbody.innerHTML = '<tr><td colspan="8">No safetensor files found</td></tr>';
             this.modelsSection.style.display = "block";
             return;
         }
@@ -214,10 +226,17 @@ class HFDownloaderUI {
                 '<span class="badge badge-split">Split Files</span>' :
                 '<span class="badge badge-single">Single File</span>';
 
+            const sizeFormatted = this.formatSize(model.total_size);
+            const precisionBadge = model.precision ?
+                `<span class="badge badge-precision">${model.precision.toUpperCase()}</span>` :
+                '<span class="badge badge-unknown">Unknown</span>';
+
             row.innerHTML = `
                 <td>${model.path}</td>
                 <td>${typeBadge}</td>
                 <td>${model.file_count}</td>
+                <td>${sizeFormatted}</td>
+                <td>${precisionBadge}</td>
                 <td><input type="text" class="output-name-input" value="${model.suggested_name}" id="name-${index}" /></td>
                 <td>
                     <select class="model-type-select" id="type-${index}">
@@ -253,6 +272,10 @@ class HFDownloaderUI {
             return;
         }
 
+        // Extract filenames from file metadata objects
+        // model.files is now an array of {name, size, precision} objects
+        const filenames = model.files.map(f => typeof f === 'string' ? f : f.name);
+
         try {
             const response = await api.fetchApi("/hf_downloader/download", {
                 method: "POST",
@@ -260,7 +283,7 @@ class HFDownloaderUI {
                 body: JSON.stringify({
                     repo_id: repoId,
                     model_path: model.path,
-                    files: model.files,
+                    files: filenames,
                     output_name: outputName,
                     model_type: modelType
                 })
@@ -647,6 +670,16 @@ function addStyles() {
         .badge-single {
             background: #51cf66;
             color: #000;
+        }
+
+        .badge-precision {
+            background: #4a9eff;
+            color: #fff;
+        }
+
+        .badge-unknown {
+            background: #666;
+            color: #ccc;
         }
 
         .output-name-input,
