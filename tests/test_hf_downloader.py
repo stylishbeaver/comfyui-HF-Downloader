@@ -272,6 +272,47 @@ class TestScanRepo:
         with pytest.raises(Exception, match="API Error"):
             downloader.scan_repo("user/test-repo")
 
+    def test_scan_repo_gguf_variants(self, downloader):
+        """Test repo scanning with GGUF quant variants"""
+        mock_files = [
+            Mock(rfilename="llm/model.Q4_K_M.gguf", size=1000000),
+            Mock(rfilename="llm/model.Q5_K_M.gguf", size=2000000),
+            Mock(rfilename="llm/other.gguf", size=500000),
+        ]
+
+        downloader.api.list_files_info = Mock(return_value=mock_files)
+
+        result = downloader.scan_repo("user/test-repo")
+        gguf_entries = [item for item in result if item.get("file_type") == "gguf"]
+
+        assert len(gguf_entries) == 2
+        model_entry = next(item for item in gguf_entries if item.get("base_name") == "model")
+        assert model_entry["file_count"] == 2
+        assert set(model_entry["quant_options"]) == {"Q4_K_M", "Q5_K_M"}
+
+
+class TestGGUFQuantExtraction:
+    """Test GGUF quant extraction from filenames"""
+
+    @pytest.fixture
+    def downloader(self):
+        return HFDownloader()
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            ("model.Q4_K_M.gguf", "Q4_K_M"),
+            ("model-q8_0.gguf", "Q8_0"),
+            ("model.F16.gguf", "F16"),
+            ("model-bf16.gguf", "BF16"),
+            ("model.gguf", None),
+            ("model_qwen.gguf", None),
+        ],
+    )
+    def test_extract_gguf_quant(self, downloader, filename, expected):
+        """Test quant extraction for common GGUF patterns"""
+        assert downloader._extract_gguf_quant(filename) == expected
+
 
 class TestHFCLIOperations:
     """Test HuggingFace CLI operations"""

@@ -1,6 +1,6 @@
 /**
  * HuggingFace Downloader Extension
- * Downloads and auto-merges split safetensor files from HuggingFace repos
+ * Downloads and auto-merges split safetensor files and single GGUF files from HuggingFace repos
  */
 
 import { app } from "../../../scripts/app.js";
@@ -92,6 +92,7 @@ class HFDownloaderUI {
                                     <th>Files</th>
                                     <th>Size</th>
                                     <th>Precision</th>
+                                    <th>Quant</th>
                                     <th>Output Name</th>
                                     <th>Destination</th>
                                     <th>Action</th>
@@ -214,13 +215,15 @@ class HFDownloaderUI {
         this.modelsTbody.innerHTML = "";
 
         if (models.length === 0) {
-            this.modelsTbody.innerHTML = '<tr><td colspan="8">No safetensor files found</td></tr>';
+            this.modelsTbody.innerHTML = '<tr><td colspan="9">No supported model files found</td></tr>';
             this.modelsSection.style.display = "block";
             return;
         }
 
         models.forEach((model, index) => {
             const row = document.createElement("tr");
+            const fileEntries = model.files.map(f => typeof f === 'string' ? { name: f } : f);
+            const isGguf = model.file_type === "gguf" || fileEntries.some(f => f.name.toLowerCase().endsWith(".gguf"));
 
             const typeBadge = model.is_split ?
                 '<span class="badge badge-split">Split Files</span>' :
@@ -229,7 +232,17 @@ class HFDownloaderUI {
             const sizeFormatted = this.formatSize(model.total_size);
             const precisionBadge = model.precision ?
                 `<span class="badge badge-precision">${model.precision.toUpperCase()}</span>` :
-                '<span class="badge badge-unknown">Unknown</span>';
+                (isGguf ? '<span class="badge badge-precision">GGUF</span>' : '<span class="badge badge-unknown">Unknown</span>');
+
+            let quantSelectHtml = '<span class="badge badge-unknown">N/A</span>';
+            if (isGguf) {
+                const options = fileEntries.map((file, fileIndex) => {
+                    const label = file.quant ? file.quant.toUpperCase() : file.name;
+                    const quantValue = file.quant ? file.quant.toUpperCase() : "";
+                    return `<option value="${file.name}" data-quant="${quantValue}" ${fileIndex === 0 ? "selected" : ""}>${label}</option>`;
+                }).join("");
+                quantSelectHtml = `<select class="quant-select" id="quant-${index}">${options}</select>`;
+            }
 
             row.innerHTML = `
                 <td>${model.path}</td>
@@ -237,6 +250,7 @@ class HFDownloaderUI {
                 <td>${model.file_count}</td>
                 <td>${sizeFormatted}</td>
                 <td>${precisionBadge}</td>
+                <td>${quantSelectHtml}</td>
                 <td><input type="text" class="output-name-input" value="${model.suggested_name}" id="name-${index}" /></td>
                 <td>
                     <select class="model-type-select" id="type-${index}">
@@ -257,6 +271,27 @@ class HFDownloaderUI {
             const downloadBtn = row.querySelector(".download-btn");
             downloadBtn.onclick = () => this.downloadModel(repoId, model, index);
 
+            const outputNameInput = row.querySelector(".output-name-input");
+            outputNameInput.dataset.autoname = "true";
+            outputNameInput.addEventListener("input", () => {
+                outputNameInput.dataset.autoname = "false";
+            });
+
+            const quantSelect = row.querySelector(".quant-select");
+            if (isGguf && quantSelect) {
+                const baseName = model.base_name || model.suggested_name || "model";
+                const updateOutputName = () => {
+                    if (outputNameInput.dataset.autoname !== "true") {
+                        return;
+                    }
+                    const selectedOption = quantSelect.options[quantSelect.selectedIndex];
+                    const quant = selectedOption ? selectedOption.dataset.quant : "";
+                    outputNameInput.value = quant ? `${baseName}-${quant}` : baseName;
+                };
+                quantSelect.addEventListener("change", updateOutputName);
+                updateOutputName();
+            }
+
             this.modelsTbody.appendChild(row);
         });
 
@@ -272,9 +307,20 @@ class HFDownloaderUI {
             return;
         }
 
+        const fileEntries = model.files.map(f => typeof f === 'string' ? { name: f } : f);
+        const isGguf = model.file_type === "gguf" || fileEntries.some(f => f.name.toLowerCase().endsWith(".gguf"));
+
         // Extract filenames from file metadata objects
         // model.files is now an array of {name, size, precision} objects
-        const filenames = model.files.map(f => typeof f === 'string' ? f : f.name);
+        let filenames = fileEntries.map(f => f.name);
+        if (isGguf) {
+            const quantSelect = document.getElementById(`quant-${index}`);
+            if (quantSelect && quantSelect.value) {
+                filenames = [quantSelect.value];
+            } else if (fileEntries.length === 1) {
+                filenames = [fileEntries[0].name];
+            }
+        }
 
         try {
             const response = await api.fetchApi("/hf_downloader/download", {
@@ -683,7 +729,8 @@ function addStyles() {
         }
 
         .output-name-input,
-        .model-type-select {
+        .model-type-select,
+        .quant-select {
             padding: 6px;
             background: #1a1a1a;
             border: 1px solid #444;

@@ -63,7 +63,7 @@ def get_model_dir(model_type: str) -> str:
 @prompt_server.routes.post("/hf_downloader/scan")
 async def scan_repo_handler(request):
     """
-    Scan a HuggingFace repo for safetensor files
+    Scan a HuggingFace repo for safetensor and GGUF files
 
     POST /hf_downloader/scan
     Body: {"repo_id": "username/model"}
@@ -101,7 +101,7 @@ async def download_model_handler(request):
     Body: {
         "repo_id": "username/model",
         "model_path": "subfolder",
-        "files": ["file1.safetensors", ...],
+        "files": ["file1.safetensors", "file2.gguf", ...],
         "output_name": "model_name",
         "model_type": "checkpoint"
     }
@@ -307,7 +307,7 @@ async def list_files_handler(request):
 
         files = []
         for filepath in model_dir.iterdir():
-            if filepath.suffix == ".safetensors":
+            if filepath.suffix in {".safetensors", ".gguf"}:
                 stat = filepath.stat()
                 files.append(
                     {

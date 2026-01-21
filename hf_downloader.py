@@ -20,11 +20,40 @@ logger = logging.getLogger(__name__)
 
 
 class HFDownloader:
-    """Downloads and merges split safetensor files from HuggingFace repos"""
+    """Downloads and merges split safetensor files and single GGUF files from HuggingFace repos"""
 
     def __init__(self):
         self.hf_token = os.getenv("HF_TOKEN")
         self.api = HfApi(token=self.hf_token) if self.hf_token else HfApi()
+
+    def _extract_gguf_quant(self, filename: str) -> str | None:
+        """
+        Extract GGUF quantization string from filename if present.
+        """
+        if not filename.lower().endswith(".gguf"):
+            return None
+
+        stem = Path(filename).stem
+        match = re.search(
+            r"(?:[._-])((?:q|iq)\d[A-Za-z0-9_]*|(?:f|bf)\d[A-Za-z0-9_]*)$",
+            stem,
+            re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).upper()
+        return None
+
+    def _split_gguf_name(self, filename: str) -> tuple[str, str | None]:
+        """
+        Split a GGUF filename into base name and quant.
+        """
+        stem = Path(filename).stem
+        quant = self._extract_gguf_quant(filename)
+        if not quant:
+            return stem, None
+
+        base_name = re.sub(rf"[._-]{re.escape(quant)}$", "", stem, flags=re.IGNORECASE)
+        return base_name, quant
 
     def _list_repo_files_info(self, repo_id: str) -> list:
         """
@@ -55,7 +84,7 @@ class HFDownloader:
 
     def scan_repo(self, repo_id: str) -> list[dict]:
         """
-        Scan a HuggingFace repo for safetensor files
+        Scan a HuggingFace repo for safetensor and GGUF files
 
         Returns list of model groups with metadata:
         - path: subfolder path
@@ -73,7 +102,7 @@ class HFDownloader:
 
             # Group safetensor files by subfolder
             models = {}
-            file_metadata = {}
+            gguf_models = {}
 
             for file_info in files_info:
                 f = file_info.rfilename
@@ -95,7 +124,23 @@ class HFDownloader:
                     # Store file metadata
                     file_meta = {"name": filename, "size": file_info.size, "precision": precision}
                     models[folder].append(file_meta)
-                    file_metadata[f] = file_info.size
+                elif f.endswith(".gguf"):
+                    parts = f.split("/")
+                    if len(parts) > 1:
+                        folder = "/".join(parts[:-1])
+                        filename = parts[-1]
+                    else:
+                        folder = "root"
+                        filename = f
+
+                    base_name, quant = self._split_gguf_name(filename)
+                    group_key = (folder, base_name)
+                    if group_key not in gguf_models:
+                        gguf_models[group_key] = []
+
+                    gguf_models[group_key].append(
+                        {"name": filename, "size": file_info.size, "quant": quant}
+                    )
 
             # Analyze each group and detect splits
             result = []
@@ -121,6 +166,7 @@ class HFDownloader:
                                 "total_size": single_file_meta["size"],
                                 "suggested_name": suggested_name,
                                 "precision": single_file_meta["precision"],
+                                "file_type": "safetensors",
                             }
                         )
                 else:
@@ -139,8 +185,30 @@ class HFDownloader:
                             "total_size": total_size,
                             "suggested_name": suggested_name,
                             "precision": precision,
+                            "file_type": "safetensors",
                         }
                     )
+
+            for (folder, base_name), files_list in gguf_models.items():
+                total_size = sum(f["size"] for f in files_list)
+                quant_options = sorted(
+                    {f["quant"] for f in files_list if f.get("quant") is not None}
+                )
+                result.append(
+                    {
+                        "path": folder,
+                        "files": sorted(files_list, key=lambda x: x["name"]),
+                        "is_split": False,
+                        "split_info": None,
+                        "file_count": len(files_list),
+                        "total_size": total_size,
+                        "suggested_name": base_name or self._suggest_name(repo_id, folder, [], None),
+                        "precision": None,
+                        "file_type": "gguf",
+                        "quant_options": quant_options,
+                        "base_name": base_name,
+                    }
+                )
 
             logger.info(f"Found {len(result)} model group(s) in repo")
             return result
@@ -192,9 +260,8 @@ class HFDownloader:
         """
         # Root folder with single file - use the actual filename
         if folder == "root" and len(files) == 1:
-            # Strip .safetensors extension but keep precision suffix
-            name = files[0].replace(".safetensors", "")
-            return name
+            # Strip extension but keep precision suffix
+            return Path(files[0]).stem
 
         # If split files, try to extract base name
         if split_info and files:
@@ -311,9 +378,15 @@ class HFDownloader:
                 progress_callback("download", len(files), len(files), "Download complete")
 
             # Merge if multiple files, otherwise just copy
-            output_path = str(Path(output_dir) / f"{output_name}.safetensors")
+            output_ext = Path(files[0]).suffix if files else ".safetensors"
+            if not output_ext:
+                output_ext = ".safetensors"
+            output_ext = output_ext.lower()
+            output_path = str(Path(output_dir) / f"{output_name}{output_ext}")
 
             if len(files) > 1:
+                if output_ext != ".safetensors":
+                    raise RuntimeError("Only safetensors files can be merged.")
                 if progress_callback:
                     progress_callback("merge", 0, len(files), "Starting merge...")
 
