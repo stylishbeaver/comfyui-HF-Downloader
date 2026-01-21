@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 from huggingface_hub import HfApi, hf_hub_download
 from safetensors.torch import load_file, save_file
@@ -24,6 +25,33 @@ class HFDownloader:
     def __init__(self):
         self.hf_token = os.getenv("HF_TOKEN")
         self.api = HfApi(token=self.hf_token) if self.hf_token else HfApi()
+
+    def _list_repo_files_info(self, repo_id: str) -> list:
+        """
+        Return file metadata with path and size across hf hub versions.
+        """
+        if hasattr(self.api, "list_files_info"):
+            return list(self.api.list_files_info(repo_id))
+
+        # Fallback for newer huggingface_hub versions where list_files_info was removed.
+        try:
+            tree = self.api.list_repo_tree(repo_id, repo_type="model", recursive=True)
+        except TypeError:
+            # Older versions may not accept repo_type; fall back to defaults.
+            tree = self.api.list_repo_tree(repo_id, recursive=True)
+
+        files = []
+        for entry in tree:
+            if getattr(entry, "type", None) == "folder":
+                continue
+            path = getattr(entry, "path", None) or getattr(entry, "rfilename", None)
+            if not path:
+                continue
+            size = getattr(entry, "size", None)
+            if size is None:
+                size = 0
+            files.append(SimpleNamespace(rfilename=path, size=size))
+        return files
 
     def scan_repo(self, repo_id: str) -> list[dict]:
         """
@@ -41,7 +69,7 @@ class HFDownloader:
             logger.info(f"Scanning HuggingFace repo: {repo_id}")
 
             # Use list_files_info to get file metadata including sizes
-            files_info = list(self.api.list_files_info(repo_id))
+            files_info = self._list_repo_files_info(repo_id)
 
             # Group safetensor files by subfolder
             models = {}
