@@ -417,7 +417,12 @@ class TestDownloadAndMerge:
                 )
 
                 assert result == str(Path(temp_dir) / "test_model.safetensors")
-                assert Path(result).exists()
+                result_path = Path(result)
+                assert result_path.exists()
+                if result_path.is_symlink():
+                    assert result_path.resolve() == Path(cached_path).resolve()
+                else:
+                    assert result_path.read_bytes() == Path(cached_path).read_bytes()
         finally:
             Path(cached_path).unlink(missing_ok=True)
 

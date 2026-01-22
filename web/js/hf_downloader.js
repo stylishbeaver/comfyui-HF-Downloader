@@ -229,7 +229,8 @@ class HFDownloaderUI {
                 '<span class="badge badge-split">Split Files</span>' :
                 '<span class="badge badge-single">Single File</span>';
 
-            const sizeFormatted = this.formatSize(model.total_size);
+            const defaultSizeBytes = isGguf ? (fileEntries[0]?.size || 0) : model.total_size;
+            const sizeFormatted = this.formatSize(defaultSizeBytes);
             const precisionBadge = model.precision ?
                 `<span class="badge badge-precision">${model.precision.toUpperCase()}</span>` :
                 (isGguf ? '<span class="badge badge-precision">GGUF</span>' : '<span class="badge badge-unknown">Unknown</span>');
@@ -239,7 +240,8 @@ class HFDownloaderUI {
                 const options = fileEntries.map((file, fileIndex) => {
                     const label = file.quant ? file.quant.toUpperCase() : file.name;
                     const quantValue = file.quant ? file.quant.toUpperCase() : "";
-                    return `<option value="${file.name}" data-quant="${quantValue}" ${fileIndex === 0 ? "selected" : ""}>${label}</option>`;
+                    const sizeValue = Number.isFinite(file.size) ? String(file.size) : "0";
+                    return `<option value="${file.name}" data-quant="${quantValue}" data-size="${sizeValue}" ${fileIndex === 0 ? "selected" : ""}>${label}</option>`;
                 }).join("");
                 quantSelectHtml = `<select class="quant-select" id="quant-${index}">${options}</select>`;
             }
@@ -248,7 +250,7 @@ class HFDownloaderUI {
                 <td>${model.path}</td>
                 <td>${typeBadge}</td>
                 <td>${model.file_count}</td>
-                <td>${sizeFormatted}</td>
+                <td id="size-${index}" class="size-cell">${sizeFormatted}</td>
                 <td>${precisionBadge}</td>
                 <td>${quantSelectHtml}</td>
                 <td><input type="text" class="output-name-input" value="${model.suggested_name}" id="name-${index}" /></td>
@@ -280,16 +282,21 @@ class HFDownloaderUI {
             const quantSelect = row.querySelector(".quant-select");
             if (isGguf && quantSelect) {
                 const baseName = model.base_name || model.suggested_name || "model";
-                const updateOutputName = () => {
+                const sizeCell = row.querySelector(`#size-${index}`);
+                const updateSelection = () => {
+                    const selectedOption = quantSelect.options[quantSelect.selectedIndex];
+                    const sizeBytes = parseInt(selectedOption?.dataset.size || "0", 10);
+                    if (sizeCell) {
+                        sizeCell.textContent = this.formatSize(sizeBytes);
+                    }
                     if (outputNameInput.dataset.autoname !== "true") {
                         return;
                     }
-                    const selectedOption = quantSelect.options[quantSelect.selectedIndex];
                     const quant = selectedOption ? selectedOption.dataset.quant : "";
                     outputNameInput.value = quant ? `${baseName}-${quant}` : baseName;
                 };
-                quantSelect.addEventListener("change", updateOutputName);
-                updateOutputName();
+                quantSelect.addEventListener("change", updateSelection);
+                updateSelection();
             }
 
             this.modelsTbody.appendChild(row);

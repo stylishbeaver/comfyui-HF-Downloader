@@ -190,18 +190,19 @@ class HFDownloader:
                     )
 
             for (folder, base_name), files_list in gguf_models.items():
-                total_size = sum(f["size"] for f in files_list)
+                sorted_files = sorted(files_list, key=lambda x: x["name"])
+                display_size = sorted_files[0]["size"] if sorted_files else 0
                 quant_options = sorted(
                     {f["quant"] for f in files_list if f.get("quant") is not None}
                 )
                 result.append(
                     {
                         "path": folder,
-                        "files": sorted(files_list, key=lambda x: x["name"]),
+                        "files": sorted_files,
                         "is_split": False,
                         "split_info": None,
                         "file_count": len(files_list),
-                        "total_size": total_size,
+                        "total_size": display_size,
                         "suggested_name": base_name or self._suggest_name(repo_id, folder, [], None),
                         "precision": None,
                         "file_type": "gguf",
@@ -395,14 +396,26 @@ class HFDownloader:
                 if progress_callback:
                     progress_callback("merge", len(files), len(files), "Merge complete")
             else:
-                # Single file - just copy from cache
+                # Single file - prefer symlink from cache for faster loads
                 if progress_callback:
-                    progress_callback("copy", 0, 1, "Copying file...")
+                    progress_callback("copy", 0, 1, "Linking file from cache...")
 
-                shutil.copy2(downloaded_paths[0], output_path)
+                output_path_obj = Path(output_path)
+                cached_path = Path(downloaded_paths[0])
+                try:
+                    if output_path_obj.exists() or output_path_obj.is_symlink():
+                        if output_path_obj.is_dir():
+                            raise RuntimeError(f"Output path is a directory: {output_path}")
+                        output_path_obj.unlink()
+                    output_path_obj.symlink_to(cached_path)
+                    action = "Linked"
+                except OSError as e:
+                    logger.warning(f"Symlink failed, falling back to copy: {e}")
+                    shutil.copy2(cached_path, output_path_obj)
+                    action = "Copied"
 
                 if progress_callback:
-                    progress_callback("copy", 1, 1, "Copy complete")
+                    progress_callback("copy", 1, 1, f"{action} file")
 
             logger.info(f"Successfully saved model to {output_path}")
             return output_path
