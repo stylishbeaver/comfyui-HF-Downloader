@@ -224,30 +224,53 @@ class HFDownloaderUI {
             const row = document.createElement("tr");
             const fileEntries = model.files.map(f => typeof f === 'string' ? { name: f } : f);
             const isGguf = model.file_type === "gguf" || fileEntries.some(f => f.name.toLowerCase().endsWith(".gguf"));
+            const isSplit = Boolean(model.is_split);
+            const isSelectable = !isSplit && fileEntries.length > 1;
 
             const typeBadge = model.is_split ?
                 '<span class="badge badge-split">Split Files</span>' :
-                '<span class="badge badge-single">Single File</span>';
+                (isSelectable ? '<span class="badge badge-single">Variants</span>' : '<span class="badge badge-single">Single File</span>');
 
-            const defaultSizeBytes = isGguf ? (fileEntries[0]?.size || 0) : model.total_size;
+            const defaultSizeBytes = (isGguf || isSelectable) ? (fileEntries[0]?.size || 0) : model.total_size;
             const sizeFormatted = this.formatSize(defaultSizeBytes);
-            const precisionBadge = model.precision ?
-                `<span class="badge badge-precision">${model.precision.toUpperCase()}</span>` :
+            let precisionLabel = model.precision;
+            if (!precisionLabel && !isGguf && isSelectable) {
+                const precisionValues = [...new Set(fileEntries.map(f => f.precision).filter(Boolean))];
+                if (precisionValues.length === 1) {
+                    precisionLabel = precisionValues[0];
+                } else if (precisionValues.length > 1) {
+                    precisionLabel = "mixed";
+                }
+            }
+            const precisionBadge = precisionLabel ?
+                `<span class="badge badge-precision">${precisionLabel.toUpperCase()}</span>` :
                 (isGguf ? '<span class="badge badge-precision">GGUF</span>' : '<span class="badge badge-unknown">Unknown</span>');
 
             let quantSelectHtml = '<span class="badge badge-unknown">N/A</span>';
-            if (isGguf) {
+            if (isGguf || isSelectable) {
+                const usedLabels = new Set();
                 const options = fileEntries.map((file, fileIndex) => {
-                    const label = file.quant ? file.quant.toUpperCase() : file.name;
                     const quantValue = file.quant ? file.quant.toUpperCase() : "";
+                    const variantValue = file.variant || file.precision || "";
+                    const displayVariant = variantValue ? variantValue.replace(/_/g, "-").toUpperCase() : "";
+                    let label = quantValue || displayVariant || file.name;
+                    if (usedLabels.has(label)) {
+                        label = file.name;
+                    }
+                    usedLabels.add(label);
                     const sizeValue = Number.isFinite(file.size) ? String(file.size) : "0";
-                    return `<option value="${file.name}" data-quant="${quantValue}" data-size="${sizeValue}" ${fileIndex === 0 ? "selected" : ""}>${label}</option>`;
+                    return `<option value="${file.name}" data-quant="${quantValue}" data-variant="${variantValue}" data-size="${sizeValue}" ${fileIndex === 0 ? "selected" : ""}>${label}</option>`;
                 }).join("");
                 quantSelectHtml = `<select class="quant-select" id="quant-${index}">${options}</select>`;
             }
 
+            const modelLabelBase = model.suggested_name || model.base_name || model.path;
+            const modelLabel = (model.path && model.path !== "root" && modelLabelBase) ?
+                `${model.path}/${modelLabelBase}` :
+                (modelLabelBase || model.path);
+
             row.innerHTML = `
-                <td>${model.path}</td>
+                <td>${modelLabel}</td>
                 <td>${typeBadge}</td>
                 <td>${model.file_count}</td>
                 <td id="size-${index}" class="size-cell">${sizeFormatted}</td>
@@ -280,7 +303,7 @@ class HFDownloaderUI {
             });
 
             const quantSelect = row.querySelector(".quant-select");
-            if (isGguf && quantSelect) {
+            if ((isGguf || isSelectable) && quantSelect) {
                 const baseName = model.base_name || model.suggested_name || "model";
                 const sizeCell = row.querySelector(`#size-${index}`);
                 const updateSelection = () => {
@@ -292,8 +315,13 @@ class HFDownloaderUI {
                     if (outputNameInput.dataset.autoname !== "true") {
                         return;
                     }
-                    const quant = selectedOption ? selectedOption.dataset.quant : "";
-                    outputNameInput.value = quant ? `${baseName}-${quant}` : baseName;
+                    let suffix = "";
+                    if (isGguf) {
+                        suffix = selectedOption ? selectedOption.dataset.quant : "";
+                    } else if (isSelectable) {
+                        suffix = selectedOption ? selectedOption.dataset.variant : "";
+                    }
+                    outputNameInput.value = suffix ? `${baseName}-${suffix}` : baseName;
                 };
                 quantSelect.addEventListener("change", updateSelection);
                 updateSelection();
@@ -316,16 +344,16 @@ class HFDownloaderUI {
 
         const fileEntries = model.files.map(f => typeof f === 'string' ? { name: f } : f);
         const isGguf = model.file_type === "gguf" || fileEntries.some(f => f.name.toLowerCase().endsWith(".gguf"));
+        const isSplit = Boolean(model.is_split);
+        const isSelectable = !isSplit && fileEntries.length > 1;
 
         // Extract filenames from file metadata objects
         // model.files is now an array of {name, size, precision} objects
         let filenames = fileEntries.map(f => f.name);
-        if (isGguf) {
+        if (isGguf || isSelectable) {
             const quantSelect = document.getElementById(`quant-${index}`);
             if (quantSelect && quantSelect.value) {
                 filenames = [quantSelect.value];
-            } else if (fileEntries.length === 1) {
-                filenames = [fileEntries[0].name];
             }
         }
 

@@ -55,6 +55,23 @@ class HFDownloader:
         base_name = re.sub(rf"[._-]{re.escape(quant)}$", "", stem, flags=re.IGNORECASE)
         return base_name, quant
 
+    def _split_safetensors_name(self, filename: str) -> tuple[str, str | None]:
+        """
+        Split a safetensors filename into base name and variant suffix (e.g., fp16, fp8_e4m3fn).
+        """
+        stem = Path(filename).stem
+        variant_pattern = re.compile(
+            r"(?:[._-])((?:fp|bf)\d+[a-z0-9_]*|int\d+|bnb[-_]?4bit|bnb[-_]?8bit|nf4|nvfp4)$",
+            re.IGNORECASE,
+        )
+        match = variant_pattern.search(stem)
+        if not match:
+            return stem, None
+
+        raw_variant = match.group(1)
+        base_name = re.sub(rf"[._-]{re.escape(raw_variant)}$", "", stem, flags=re.IGNORECASE)
+        return base_name, raw_variant.lower()
+
     def _list_repo_files_info(self, repo_id: str) -> list:
         """
         Return file metadata with path and size across hf hub versions.
@@ -100,13 +117,14 @@ class HFDownloader:
             # Use list_files_info to get file metadata including sizes
             files_info = self._list_repo_files_info(repo_id)
 
-            # Group safetensor files by subfolder
-            models = {}
+            # Group safetensor files by base name and split pattern
+            safetensor_groups = {}
             gguf_models = {}
+            split_pattern = re.compile(r"^(.+?)-(\d+)-of-(\d+)\.safetensors$", re.IGNORECASE)
 
             for file_info in files_info:
                 f = file_info.rfilename
-                if f.endswith(".safetensors"):
+                if f.lower().endswith(".safetensors"):
                     parts = f.split("/")
                     if len(parts) > 1:
                         folder = "/".join(parts[:-1])
@@ -115,16 +133,43 @@ class HFDownloader:
                         folder = "root"
                         filename = f
 
-                    if folder not in models:
-                        models[folder] = []
+                    split_match = split_pattern.match(filename)
+                    variant = None
+                    if split_match:
+                        base_name = split_match.group(1)
+                        group_key = ("split", folder, base_name)
+                        if group_key not in safetensor_groups:
+                            safetensor_groups[group_key] = {
+                                "folder": folder,
+                                "base_name": base_name,
+                                "files": [],
+                                "is_split": True,
+                                "split_info": {
+                                    "total": int(split_match.group(3)),
+                                    "pattern": split_pattern.pattern,
+                                },
+                            }
+                    else:
+                        base_name, variant = self._split_safetensors_name(filename)
+                        group_key = ("single", folder, base_name)
+                        if group_key not in safetensor_groups:
+                            safetensor_groups[group_key] = {
+                                "folder": folder,
+                                "base_name": base_name,
+                                "files": [],
+                                "is_split": False,
+                                "split_info": None,
+                            }
 
                     # Extract precision from filename
                     precision = self._extract_precision(filename)
 
                     # Store file metadata
                     file_meta = {"name": filename, "size": file_info.size, "precision": precision}
-                    models[folder].append(file_meta)
-                elif f.endswith(".gguf"):
+                    if variant:
+                        file_meta["variant"] = variant
+                    safetensor_groups[group_key]["files"].append(file_meta)
+                elif f.lower().endswith(".gguf"):
                     parts = f.split("/")
                     if len(parts) > 1:
                         folder = "/".join(parts[:-1])
@@ -142,52 +187,52 @@ class HFDownloader:
                         {"name": filename, "size": file_info.size, "quant": quant}
                     )
 
-            # Analyze each group and detect splits
+            # Build result list for safetensors
             result = []
-            for folder, files_list in models.items():
-                # Extract just filenames for split detection
-                filenames = [f["name"] for f in files_list]
-                split_info = self._detect_splits(filenames)
+            for group in safetensor_groups.values():
+                folder = group["folder"]
+                files_list = sorted(group["files"], key=lambda x: x["name"])
+                is_split = group["is_split"]
+                split_info = group["split_info"]
+                file_count = len(files_list)
 
-                # Special handling for root folder with multiple non-split files
-                # Each should be a separate selectable entry
-                if folder == "root" and not split_info and len(files_list) > 1:
-                    for single_file_meta in files_list:
-                        suggested_name = self._suggest_name(
-                            repo_id, folder, [single_file_meta["name"]], None
-                        )
-                        result.append(
-                            {
-                                "path": folder,
-                                "files": [single_file_meta],
-                                "is_split": False,
-                                "split_info": None,
-                                "file_count": 1,
-                                "total_size": single_file_meta["size"],
-                                "suggested_name": suggested_name,
-                                "precision": single_file_meta["precision"],
-                                "file_type": "safetensors",
-                            }
-                        )
-                else:
-                    # Normal grouped handling (subfolders or split files)
-                    suggested_name = self._suggest_name(repo_id, folder, filenames, split_info)
+                if is_split:
                     total_size = sum(f["size"] for f in files_list)
-                    # For grouped files, precision is from the first file (they should match)
-                    precision = files_list[0]["precision"] if files_list else None
-                    result.append(
-                        {
-                            "path": folder,
-                            "files": sorted(files_list, key=lambda x: x["name"]),
-                            "is_split": split_info is not None,
-                            "split_info": split_info,
-                            "file_count": len(files_list),
-                            "total_size": total_size,
-                            "suggested_name": suggested_name,
-                            "precision": precision,
-                            "file_type": "safetensors",
-                        }
-                    )
+                else:
+                    total_size = files_list[0]["size"] if files_list else 0
+
+                precision_values = {f["precision"] for f in files_list if f.get("precision")}
+                precision = None
+                if len(precision_values) == 1:
+                    precision = next(iter(precision_values))
+                elif len(precision_values) > 1:
+                    precision = "mixed"
+
+                if is_split:
+                    filenames = [f["name"] for f in files_list]
+                    suggested_name = self._suggest_name(repo_id, folder, filenames, split_info)
+                else:
+                    if file_count == 1 and files_list:
+                        suggested_name = Path(files_list[0]["name"]).stem
+                    else:
+                        suggested_name = group["base_name"] or (
+                            Path(files_list[0]["name"]).stem if files_list else "model"
+                        )
+
+                result.append(
+                    {
+                        "path": folder,
+                        "files": files_list,
+                        "is_split": is_split,
+                        "split_info": split_info,
+                        "file_count": file_count,
+                        "total_size": total_size,
+                        "suggested_name": suggested_name,
+                        "precision": precision,
+                        "file_type": "safetensors",
+                        "base_name": group["base_name"],
+                    }
+                )
 
             for (folder, base_name), files_list in gguf_models.items():
                 sorted_files = sorted(files_list, key=lambda x: x["name"])
@@ -225,7 +270,8 @@ class HFDownloader:
         """
         # Common precision patterns
         precision_pattern = re.compile(
-            r"[-_](fp16|fp32|bf16|fp8|int8|int4|bnb[-_]?4bit|bnb[-_]?8bit)", re.IGNORECASE
+            r"[-_]((?:fp|bf)\d+[a-z0-9_]*|int\d+|bnb[-_]?4bit|bnb[-_]?8bit|nf4|nvfp4)",
+            re.IGNORECASE,
         )
         match = precision_pattern.search(filename)
         if match:

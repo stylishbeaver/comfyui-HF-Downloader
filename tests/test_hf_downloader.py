@@ -57,6 +57,8 @@ class TestPrecisionExtraction:
             ("model-int4.safetensors", "int4"),
             ("model_bnb-4bit.safetensors", "bnb-4bit"),
             ("model-bnb_8bit.safetensors", "bnb-8bit"),
+            ("model_fp8_e4m3fn.safetensors", "fp8-e4m3fn"),
+            ("model_nvfp4.safetensors", "nvfp4"),
             ("model.safetensors", None),
             ("model_v2.safetensors", None),
         ],
@@ -264,6 +266,31 @@ class TestScanRepo:
         assert len(result) == 2
         assert all(item["path"] == "root" for item in result)
         assert all(item["file_count"] == 1 for item in result)
+
+    def test_scan_repo_subfolder_variants_grouped(self, downloader):
+        """Test that non-split variants in the same folder are grouped by base name"""
+        mock_files = [
+            Mock(rfilename="models/qwen_image_bf16.safetensors", size=1000000),
+            Mock(rfilename="models/qwen_image_fp8_e4m3fn.safetensors", size=2000000),
+            Mock(rfilename="models/other.safetensors", size=3000000),
+        ]
+
+        downloader.api.list_files_info = Mock(return_value=mock_files)
+
+        result = downloader.scan_repo("user/test-repo")
+
+        assert len(result) == 2
+        qwen_group = next(item for item in result if item.get("base_name") == "qwen_image")
+        assert qwen_group["file_count"] == 2
+        assert qwen_group["is_split"] is False
+        assert qwen_group["suggested_name"] == "qwen_image"
+        assert {f["name"] for f in qwen_group["files"]} == {
+            "qwen_image_bf16.safetensors",
+            "qwen_image_fp8_e4m3fn.safetensors",
+        }
+        other_group = next(item for item in result if item.get("base_name") == "other")
+        assert other_group["file_count"] == 1
+        assert other_group["total_size"] == 3000000
 
     def test_scan_repo_error_handling(self, downloader):
         """Test error handling in repo scanning"""
