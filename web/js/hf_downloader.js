@@ -211,6 +211,38 @@ class HFDownloaderUI {
         return `${mb.toFixed(2)} MB`;
     }
 
+    inferModelTypeFromPath(modelPath) {
+        if (!modelPath || modelPath === "root") {
+            return null;
+        }
+
+        const normalized = modelPath.toLowerCase().replace(/\\/g, "/");
+        const segments = normalized.split("/").filter(Boolean);
+
+        const patterns = [
+            { re: /^(checkpoints?|ckpt)$/, type: "checkpoint" },
+            { re: /^loras?$/, type: "lora" },
+            { re: /^vaes?$/, type: "vae" },
+            { re: /^(upscale_models?|upscalers?|upscale)$/, type: "upscale_model" },
+            { re: /^embeddings?$/, type: "embedding" },
+            { re: /^clip$/, type: "clip" },
+            { re: /^controlnets?$/, type: "controlnet" },
+            { re: /^(diffusion_models?|diffusion_model|unet)$/, type: "diffusion_model" },
+            { re: /^text[_-]?encoders?$/, type: "text_encoder" },
+            { re: /^text[_-]?encoder$/, type: "text_encoder" }
+        ];
+
+        for (const segment of segments) {
+            for (const { re, type } of patterns) {
+                if (re.test(segment)) {
+                    return type;
+                }
+            }
+        }
+
+        return null;
+    }
+
     renderModels(repoId, models) {
         this.modelsTbody.innerHTML = "";
 
@@ -325,6 +357,12 @@ class HFDownloaderUI {
                 };
                 quantSelect.addEventListener("change", updateSelection);
                 updateSelection();
+            }
+
+            const modelTypeSelect = row.querySelector(`#type-${index}`);
+            const inferredType = this.inferModelTypeFromPath(model.path);
+            if (modelTypeSelect && inferredType) {
+                modelTypeSelect.value = inferredType;
             }
 
             this.modelsTbody.appendChild(row);
@@ -650,10 +688,12 @@ function addStyles() {
             color: var(--comfy-text-color, #fff);
             border-radius: 8px;
             padding: 20px;
-            max-width: 900px;
+            width: calc(100% - 48px);
+            max-width: none;
             max-height: 90vh;
             overflow-y: auto;
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            box-sizing: border-box;
         }
 
         .hf-downloader-header {
