@@ -15,8 +15,41 @@ from types import SimpleNamespace
 
 from huggingface_hub import HfApi, hf_hub_download
 from safetensors.torch import load_file, save_file
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+
+class ProgressTqdm(tqdm):
+    """Custom tqdm class that reports progress via callback"""
+
+    def __init__(self, *args, callback=None, file_index=0, total_files=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.callback = callback
+        self.file_index = file_index
+        self.total_files = total_files
+
+    def update(self, n=1):
+        """Override update to call progress callback"""
+        result = super().update(n)
+        if self.callback and self.total:
+            # Calculate progress within current file (0-100%)
+            file_progress = int((self.n / self.total) * 100)
+            # Calculate overall progress across all files
+            overall_progress = ((self.file_index + (self.n / self.total)) / self.total_files) * 100
+
+            # Format current/total for display
+            current_bytes = self.n
+            total_bytes = self.total
+
+            # Call the progress callback with detailed info
+            self.callback(
+                "download",
+                self.n,  # current bytes in this file
+                self.total,  # total bytes in this file
+                f"Downloading file {self.file_index + 1}/{self.total_files}: {file_progress}% ({current_bytes / (1024**3):.2f}GB / {total_bytes / (1024**3):.2f}GB)",
+            )
+        return result
 
 
 class HFDownloader:
@@ -395,17 +428,9 @@ class HFDownloader:
         try:
             Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-            # Check if HF CLI is available
-            if not self._check_hf_cli():
-                raise RuntimeError(
-                    "HF CLI not found. Please install with: curl -LsSf https://hf.co/cli/install.sh | bash"
-                )
-
-            # Login to HF if token available
-            if self.hf_token:
-                if progress_callback:
-                    progress_callback("auth", 0, 1, "Authenticating with HuggingFace...")
-                self._hf_login()
+            # Token is passed directly to hf_hub_download, no separate auth needed
+            if self.hf_token and progress_callback:
+                progress_callback("auth", 0, 1, "Using HuggingFace token...")
 
             # Download files
             if progress_callback:
@@ -416,9 +441,11 @@ class HFDownloader:
                 file_path = f"{folder_path}/{filename}" if folder_path != "root" else filename
 
                 if progress_callback:
-                    progress_callback("download", idx, len(files), f"Downloading {filename}...")
+                    progress_callback("download", idx, len(files), f"Starting download: {filename}...")
 
-                cached_path = self._download_file(repo_id, file_path)
+                cached_path = self._download_file(
+                    repo_id, file_path, progress_callback, file_index=idx, total_files=len(files)
+                )
                 downloaded_paths.append(cached_path)
 
             if progress_callback:
@@ -492,20 +519,49 @@ class HFDownloader:
             logger.warning(f"HF auth warning: {e.stderr}")
             # Don't fail - token might already be cached
 
-    def _download_file(self, repo_id: str, file_path: str) -> str:
+    def _download_file(
+        self,
+        repo_id: str,
+        file_path: str,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+        file_index: int = 0,
+        total_files: int = 1,
+    ) -> str:
         """
-        Download a single file using HF CLI
+        Download a single file using HuggingFace Hub Python API (shows progress bars!)
         Returns path to cached file
         """
         try:
-            result = subprocess.run(
-                ["hf", "download", repo_id, file_path], capture_output=True, check=True, text=True
-            )
-            cached_path = result.stdout.strip()
+            # Create custom tqdm class instance for this download
+            if progress_callback:
+                # Use our custom tqdm that reports progress
+                from functools import partial
+
+                custom_tqdm = partial(
+                    ProgressTqdm,
+                    callback=progress_callback,
+                    file_index=file_index,
+                    total_files=total_files,
+                )
+                cached_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=file_path,
+                    token=self.hf_token,
+                    resume_download=True,
+                    tqdm_class=custom_tqdm,
+                )
+            else:
+                # No progress callback, use default tqdm (shows in console)
+                cached_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=file_path,
+                    token=self.hf_token,
+                    resume_download=True,
+                )
             logger.info(f"Downloaded {file_path} to {cached_path}")
             return cached_path
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error downloading {file_path}: {e.stderr}")
+        except Exception as e:
+            logger.error(f"Error downloading {file_path}: {e}")
             raise
 
     def _merge_files(
