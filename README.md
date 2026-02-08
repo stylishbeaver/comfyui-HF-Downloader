@@ -1,6 +1,6 @@
 # ComfyUI HuggingFace Downloader
 
-A ComfyUI custom extension for downloading and automatically merging split safetensor files from HuggingFace repositories.
+A ComfyUI custom extension for downloading and automatically merging split safetensor files from HuggingFace repositories. Also supports GGUF, PyTorch (.pt/.pth) model formats.
 
 ## Features
 
@@ -10,6 +10,7 @@ A ComfyUI custom extension for downloading and automatically merging split safet
 - 🎯 **Intelligent naming** - suggests output names from repo/folder structure
 - 📊 **Progress tracking** - real-time download and merge progress
 - 🔐 **Token support** - uses `HF_TOKEN` environment variable for authentication
+- 🎨 **Multiple formats** - supports safetensors, GGUF, PyTorch (.pt/.pth) models
 
 ## Problem This Solves
 

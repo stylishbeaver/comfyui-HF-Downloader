@@ -53,7 +53,7 @@ class ProgressTqdm(tqdm):
 
 
 class HFDownloader:
-    """Downloads and merges split safetensor files and single GGUF files from HuggingFace repos"""
+    """Downloads and merges split safetensor files and single GGUF/PyTorch (.pt/.pth) files from HuggingFace repos"""
 
     def __init__(self):
         self.hf_token = os.getenv("HF_TOKEN")
@@ -134,7 +134,7 @@ class HFDownloader:
 
     def scan_repo(self, repo_id: str) -> list[dict]:
         """
-        Scan a HuggingFace repo for safetensor and GGUF files
+        Scan a HuggingFace repo for safetensor, GGUF, and PyTorch (.pt/.pth) files
 
         Returns list of model groups with metadata:
         - path: subfolder path
@@ -153,6 +153,7 @@ class HFDownloader:
             # Group safetensor files by base name and split pattern
             safetensor_groups = {}
             gguf_models = {}
+            pt_models = {}
             split_pattern = re.compile(r"^(.+?)-(\d+)-of-(\d+)\.safetensors$", re.IGNORECASE)
 
             for file_info in files_info:
@@ -219,6 +220,27 @@ class HFDownloader:
                     gguf_models[group_key].append(
                         {"name": filename, "size": file_info.size, "quant": quant}
                     )
+                elif f.lower().endswith((".pt", ".pth")):
+                    parts = f.split("/")
+                    if len(parts) > 1:
+                        folder = "/".join(parts[:-1])
+                        filename = parts[-1]
+                    else:
+                        folder = "root"
+                        filename = f
+
+                    # Extract base name (remove extension and any precision suffix)
+                    stem = Path(filename).stem
+                    base_name, variant = self._split_safetensors_name(stem)
+
+                    group_key = (folder, base_name)
+                    if group_key not in pt_models:
+                        pt_models[group_key] = []
+
+                    file_meta = {"name": filename, "size": file_info.size}
+                    if variant:
+                        file_meta["variant"] = variant
+                    pt_models[group_key].append(file_meta)
 
             # Build result list for safetensors
             result = []
@@ -286,6 +308,37 @@ class HFDownloader:
                         "file_type": "gguf",
                         "quant_options": quant_options,
                         "base_name": base_name,
+                    }
+                )
+
+            for (folder, base_name), files_list in pt_models.items():
+                sorted_files = sorted(files_list, key=lambda x: x["name"])
+                display_size = sorted_files[0]["size"] if sorted_files else 0
+
+                # Extract precision/variant info from files
+                precision_values = {f.get("variant") for f in files_list if f.get("variant")}
+                precision = None
+                if len(precision_values) == 1:
+                    precision = next(iter(precision_values))
+                elif len(precision_values) > 1:
+                    precision = "mixed"
+
+                # Determine file extension for suggested name
+                first_file_ext = Path(sorted_files[0]["name"]).suffix if sorted_files else ".pt"
+
+                result.append(
+                    {
+                        "path": folder,
+                        "files": sorted_files,
+                        "is_split": False,
+                        "split_info": None,
+                        "file_count": len(files_list),
+                        "total_size": display_size,
+                        "suggested_name": base_name or self._suggest_name(repo_id, folder, [], None),
+                        "precision": precision,
+                        "file_type": "pytorch",
+                        "base_name": base_name,
+                        "extension": first_file_ext,
                     }
                 )
 
