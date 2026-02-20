@@ -320,7 +320,9 @@ class HFDownloaderUI {
                         <option value="controlnet">ControlNet</option>
                         <option value="diffusion_model">Diffusion Models</option>
                         <option value="text_encoder">Text Encoder</option>
+                        <option value="custom">Custom...</option>
                     </select>
+                    <input type="text" class="custom-path-input" id="custom-path-${index}" placeholder="e.g. custom_nodes/MyNode/models" style="display: none; margin-top: 4px;" />
                 </td>
                 <td><button class="download-btn" data-index="${index}">Download</button></td>
             `;
@@ -360,9 +362,16 @@ class HFDownloaderUI {
             }
 
             const modelTypeSelect = row.querySelector(`#type-${index}`);
+            const customPathInput = row.querySelector(`#custom-path-${index}`);
             const inferredType = this.inferModelTypeFromPath(model.path);
             if (modelTypeSelect && inferredType) {
                 modelTypeSelect.value = inferredType;
+            }
+
+            if (modelTypeSelect && customPathInput) {
+                modelTypeSelect.addEventListener("change", () => {
+                    customPathInput.style.display = modelTypeSelect.value === "custom" ? "block" : "none";
+                });
             }
 
             this.modelsTbody.appendChild(row);
@@ -380,6 +389,17 @@ class HFDownloaderUI {
             return;
         }
 
+        // Validate custom path if selected
+        let customPath = null;
+        if (modelType === "custom") {
+            const customPathInput = document.getElementById(`custom-path-${index}`);
+            customPath = customPathInput ? customPathInput.value.trim() : "";
+            if (!customPath) {
+                alert("Please enter a custom path (relative to models directory)");
+                return;
+            }
+        }
+
         const fileEntries = model.files.map(f => typeof f === 'string' ? { name: f } : f);
         const isGguf = model.file_type === "gguf" || fileEntries.some(f => f.name.toLowerCase().endsWith(".gguf"));
         const isSplit = Boolean(model.is_split);
@@ -395,17 +415,22 @@ class HFDownloaderUI {
             }
         }
 
+        const requestBody = {
+            repo_id: repoId,
+            model_path: model.path,
+            files: filenames,
+            output_name: outputName,
+            model_type: modelType
+        };
+        if (customPath) {
+            requestBody.custom_path = customPath;
+        }
+
         try {
             const response = await api.fetchApi("/hf_downloader/download", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    repo_id: repoId,
-                    model_path: model.path,
-                    files: filenames,
-                    output_name: outputName,
-                    model_type: modelType
-                })
+                body: JSON.stringify(requestBody)
             });
 
             const data = await response.json();
@@ -805,13 +830,18 @@ function addStyles() {
 
         .output-name-input,
         .model-type-select,
-        .quant-select {
+        .quant-select,
+        .custom-path-input {
             padding: 6px;
             background: #1a1a1a;
             border: 1px solid #444;
             color: #fff;
             border-radius: 3px;
             width: 100%;
+        }
+
+        .custom-path-input {
+            font-size: 12px;
         }
 
         .download-btn {

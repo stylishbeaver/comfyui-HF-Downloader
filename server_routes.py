@@ -114,11 +114,17 @@ async def download_model_handler(request):
         files = data.get("files", [])
         output_name = data.get("output_name", "model")
         model_type = data.get("model_type", "checkpoint")
+        custom_path = data.get("custom_path", "").strip()
 
         # Validation
         if not repo_id or not files or not output_name:
             return web.json_response(
                 {"error": "repo_id, files, and output_name are required"}, status=400
+            )
+
+        if model_type == "custom" and not custom_path:
+            return web.json_response(
+                {"error": "custom_path is required when model_type is 'custom'"}, status=400
             )
 
         # Generate unique task ID
@@ -131,7 +137,15 @@ async def download_model_handler(request):
             )
 
         # Get output directory
-        output_dir = get_model_dir(model_type)
+        if model_type == "custom":
+            # Sanitize: reject absolute paths and path traversal
+            if custom_path.startswith("/") or ".." in custom_path.split("/"):
+                return web.json_response(
+                    {"error": "Invalid custom path: must be relative and cannot contain '..'"}, status=400
+                )
+            output_dir = str(Path(folder_paths.models_dir) / custom_path)
+        else:
+            output_dir = get_model_dir(model_type)
 
         # Start download task in background
         task = asyncio.create_task(
