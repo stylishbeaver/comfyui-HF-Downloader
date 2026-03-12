@@ -18,3 +18,9 @@ try:
     print("[HF Downloader] Extension loaded successfully")
 except ImportError:
     pass  # Running in test environment or standalone
+
+try:
+    from . import startup_downloads
+    startup_downloads.start_background_downloads()
+except Exception as e:
+    print(f"[HF Downloader] Warning: Failed to start background downloads: {e}")
