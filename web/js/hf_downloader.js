@@ -73,6 +73,7 @@ class HFDownloaderUI {
 
                 <div class="hf-tabs">
                     <button class="hf-tab active" data-tab="download">Download</button>
+                    <button class="hf-tab" data-tab="status">Status <span id="hf-status-badge" class="hf-status-badge" style="display:none">0</span></button>
                     <button class="hf-tab" data-tab="manage">Manage Files</button>
                 </div>
 
@@ -103,6 +104,25 @@ class HFDownloaderUI {
                     </div>
 
                     <div class="hf-progress-section" id="hf-progress-section"></div>
+                </div>
+
+                <div id="hf-tab-status" class="hf-tab-content">
+                    <div class="hf-status-toolbar">
+                        <button id="hf-status-refresh-btn">↻ Refresh</button>
+                        <button id="hf-status-clear-done-btn">Clear Done</button>
+                    </div>
+                    <div id="hf-status-active-section">
+                        <div class="hf-status-section-label">Active &amp; Queued</div>
+                        <div id="hf-status-active-list"></div>
+                    </div>
+                    <div id="hf-status-done-section">
+                        <div class="hf-status-section-label">Completed</div>
+                        <div id="hf-status-done-list"></div>
+                    </div>
+                    <div id="hf-status-failed-section">
+                        <div class="hf-status-section-label">Failed</div>
+                        <div id="hf-status-failed-list"></div>
+                    </div>
                 </div>
 
                 <div id="hf-tab-manage" class="hf-tab-content">
@@ -136,12 +156,22 @@ class HFDownloaderUI {
         this.fileTypeFilter = this.modal.querySelector("#hf-file-type-filter");
         this.refreshFilesButton = this.modal.querySelector("#hf-refresh-files");
         this.filesList = this.modal.querySelector("#hf-files-list");
+        this.statusBadge = this.modal.querySelector("#hf-status-badge");
+        this.statusActiveList = this.modal.querySelector("#hf-status-active-list");
+        this.statusDoneList = this.modal.querySelector("#hf-status-done-list");
+        this.statusFailedList = this.modal.querySelector("#hf-status-failed-list");
+        this.statusActiveSection = this.modal.querySelector("#hf-status-active-section");
+        this.statusDoneSection = this.modal.querySelector("#hf-status-done-section");
+        this.statusFailedSection = this.modal.querySelector("#hf-status-failed-section");
+        this.statusInterval = null;
 
         // Setup event listeners
         this.closeButton.onclick = () => this.closeModal();
         this.scanButton.onclick = () => this.scanRepo();
         this.refreshFilesButton.onclick = () => this.loadFiles();
         this.fileTypeFilter.onchange = () => this.loadFiles();
+        this.modal.querySelector("#hf-status-refresh-btn").onclick = () => this.refreshStatus();
+        this.modal.querySelector("#hf-status-clear-done-btn").onclick = () => this.clearDoneItems();
 
         // Tab switching
         this.modal.querySelectorAll(".hf-tab").forEach(tab => {
@@ -578,10 +608,131 @@ class HFDownloaderUI {
             content.classList.toggle("active", content.id === `hf-tab-${tabName}`);
         });
 
-        // Load files when switching to manage tab
         if (tabName === "manage") {
             this.loadFiles();
         }
+
+        if (tabName === "status") {
+            this.startStatusPolling();
+        } else {
+            this.stopStatusPolling();
+        }
+    }
+
+    startStatusPolling() {
+        if (this.statusInterval) return;
+        this.refreshStatus();
+        this.statusInterval = setInterval(() => this.refreshStatus(), 2000);
+    }
+
+    stopStatusPolling() {
+        if (this.statusInterval) {
+            clearInterval(this.statusInterval);
+            this.statusInterval = null;
+        }
+    }
+
+    async refreshStatus() {
+        try {
+            const response = await api.fetchApi("/hf_downloader/status");
+            const items = await response.json();
+            if (!Array.isArray(items)) return;
+            this.renderStatus(items);
+            this.updateStatusBadge(items);
+        } catch (e) {
+            console.error("[HF Downloader] Status fetch error:", e);
+        }
+    }
+
+    updateStatusBadge(items) {
+        const active = items.filter(i => i.status === "running" || i.status === "queued" || i.status === "starting").length;
+        if (this.statusBadge) {
+            this.statusBadge.textContent = active;
+            this.statusBadge.style.display = active > 0 ? "inline-block" : "none";
+        }
+    }
+
+    renderStatus(items) {
+        const cleared = this._clearedItems || new Set();
+        const active = items.filter(i => ["running", "queued", "starting"].includes(i.status));
+        const done   = items.filter(i => i.status === "completed" && !cleared.has(i.task_id));
+        const failed = items.filter(i => ["error", "cancelled"].includes(i.status) && !cleared.has(i.task_id));
+
+        this.renderStatusGroup(this.statusActiveList, this.statusActiveSection, active, "Nothing active or queued.");
+        this.renderStatusGroup(this.statusDoneList,   this.statusDoneSection,   done,   "No completed downloads yet.");
+        this.renderStatusGroup(this.statusFailedList, this.statusFailedSection, failed, "No failed downloads.");
+    }
+
+    renderStatusGroup(container, section, items, emptyMsg) {
+        if (!container || !section) return;
+
+        if (items.length === 0) {
+            section.style.display = "none";
+            return;
+        }
+        section.style.display = "block";
+
+        container.innerHTML = "";
+        items.forEach(item => {
+            const tid = item.task_id || "";
+            const name = item.name || tid;
+            const status = item.status || "unknown";
+            const msg = item.message || "";
+            const pct = item.total > 0 ? Math.round(item.current / item.total * 100) : 0;
+            const isIndeterminate = status === "running" && item.total === 0;
+
+            let barClass = "";
+            if (status === "completed") barClass = "hf-sbar-done";
+            else if (status === "error" || status === "cancelled") barClass = "hf-sbar-failed";
+
+            const barStyle = isIndeterminate
+                ? 'style="width:100%" class="hf-status-bar hf-sbar-indeterminate"'
+                : `style="width:${status === "completed" ? 100 : pct}%" class="hf-status-bar ${barClass}"`;
+
+            const el = document.createElement("div");
+            el.className = "hf-status-item";
+            el.dataset.tid = tid;
+            el.innerHTML = `
+                <div class="hf-status-item-header">
+                    <span class="hf-status-item-name" title="${name}">${name}</span>
+                    <span class="hf-status-pill hf-pill-${status}">${status}</span>
+                </div>
+                <div class="hf-status-bar-track">
+                    <div ${barStyle}></div>
+                </div>
+                ${msg ? `<div class="hf-status-item-msg">${msg}</div>` : ""}
+                ${(status === "running" || status === "queued" || status === "starting") && tid
+                    ? `<button class="hf-status-abort-btn" data-tid="${tid}">Abort</button>`
+                    : ""}
+            `;
+
+            const abortBtn = el.querySelector(".hf-status-abort-btn");
+            if (abortBtn) {
+                abortBtn.onclick = async () => {
+                    abortBtn.disabled = true;
+                    abortBtn.textContent = "Aborting…";
+                    await this.abortDownload(tid);
+                    this.refreshStatus();
+                };
+            }
+
+            container.appendChild(el);
+        });
+    }
+
+    clearDoneItems() {
+        // Track which task_ids have been dismissed client-side
+        if (!this._clearedItems) this._clearedItems = new Set();
+        // Add all currently completed/failed items to the cleared set
+        this.statusDoneList.querySelectorAll(".hf-status-item").forEach(el => {
+            const tid = el.dataset.tid;
+            if (tid) this._clearedItems.add(tid);
+        });
+        this.statusFailedList.querySelectorAll(".hf-status-item").forEach(el => {
+            const tid = el.dataset.tid;
+            if (tid) this._clearedItems.add(tid);
+        });
+        this.refreshStatus();
     }
 
     async loadFiles() {
@@ -1064,6 +1215,149 @@ function addStyles() {
             background: #666 !important;
             cursor: not-allowed;
         }
+
+        /* ── Status tab ─────────────────────────────────────────────────── */
+
+        .hf-status-badge {
+            display: inline-block;
+            background: #e53e3e;
+            color: #fff;
+            font-size: 11px;
+            font-weight: bold;
+            border-radius: 10px;
+            padding: 1px 6px;
+            margin-left: 4px;
+            vertical-align: middle;
+            line-height: 16px;
+        }
+
+        .hf-status-toolbar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .hf-status-toolbar button {
+            padding: 6px 14px;
+            background: #333;
+            border: 1px solid #555;
+            color: #ccc;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .hf-status-toolbar button:hover {
+            background: #444;
+            color: #fff;
+        }
+
+        .hf-status-section-label {
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #777;
+            margin-bottom: 8px;
+        }
+
+        #hf-status-active-section,
+        #hf-status-done-section,
+        #hf-status-failed-section {
+            margin-bottom: 20px;
+        }
+
+        .hf-status-item {
+            background: #2a2a2a;
+            border-radius: 5px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+        }
+
+        .hf-status-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            gap: 8px;
+        }
+
+        .hf-status-item-name {
+            font-size: 13px;
+            font-weight: 500;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .hf-status-pill {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: bold;
+            text-transform: uppercase;
+            border-radius: 3px;
+            padding: 2px 7px;
+        }
+
+        .hf-pill-running   { background: #1c4fa0; color: #90c4ff; }
+        .hf-pill-queued    { background: #5a3d00; color: #ffc947; }
+        .hf-pill-starting  { background: #1c4fa0; color: #90c4ff; }
+        .hf-pill-completed { background: #1a4a2a; color: #4ade80; }
+        .hf-pill-error     { background: #4a1a1a; color: #ff6b6b; }
+        .hf-pill-cancelled { background: #3a3a3a; color: #aaa; }
+        .hf-pill-unknown   { background: #333;    color: #888; }
+
+        .hf-status-bar-track {
+            width: 100%;
+            height: 6px;
+            background: #1a1a1a;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+
+        .hf-status-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4a9eff 0%, #3a8eef 100%);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        .hf-sbar-done   { background: linear-gradient(90deg, #51cf66 0%, #40bf56 100%); }
+        .hf-sbar-failed { background: linear-gradient(90deg, #ff6b6b 0%, #ef5b5b 100%); }
+
+        @keyframes hf-indeterminate {
+            0%   { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+        }
+
+        .hf-sbar-indeterminate {
+            width: 25% !important;
+            animation: hf-indeterminate 1.4s ease infinite;
+        }
+
+        .hf-status-item-msg {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 4px;
+            word-break: break-all;
+        }
+
+        .hf-status-abort-btn {
+            margin-top: 4px;
+            padding: 3px 10px;
+            background: #6b1a1a;
+            border: none;
+            color: #ff9999;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .hf-status-abort-btn:hover  { background: #8b2020; }
+        .hf-status-abort-btn:disabled { background: #444; color: #777; cursor: not-allowed; }
     `;
     document.head.appendChild(style);
 }

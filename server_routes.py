@@ -178,6 +178,25 @@ async def download_model_handler(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+@prompt_server.routes.get("/hf_downloader/status")
+async def get_all_status_handler(request):
+    """
+    Get status of all download tasks (active, completed, failed).
+
+    GET /hf_downloader/status
+    """
+    try:
+        items = []
+        for task_id, progress in download_progress.items():
+            entry = dict(progress)
+            entry["task_id"] = task_id
+            items.append(entry)
+        return web.json_response(items)
+    except Exception as e:
+        logger.error(f"Error getting status: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
 @prompt_server.routes.get("/hf_downloader/progress/{task_id}")
 async def get_progress_handler(request):
     """
@@ -217,6 +236,7 @@ async def run_download_task(
     files: list[str],
     output_dir: str,
     output_name: str,
+    name: str = "",
 ) -> None:
     """
     Background task to run the download and merge operation
@@ -230,6 +250,7 @@ async def run_download_task(
             "current": current,
             "total": total,
             "message": message,
+            "name": name,
         }
 
     try:
@@ -255,6 +276,7 @@ async def run_download_task(
             "total": 1,
             "message": f"Successfully saved to {output_path}",
             "output_path": output_path,
+            "name": name,
         }
 
         logger.info(f"Download task {task_id} completed successfully")
@@ -269,6 +291,7 @@ async def run_download_task(
             "current": 0,
             "total": 0,
             "message": str(e),
+            "name": name,
         }
 
 

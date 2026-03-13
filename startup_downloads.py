@@ -1,14 +1,15 @@
 """
 Startup background downloader for hf_models.toml.
 
-On ComfyUI startup, reads /workspace/hf_models.toml and downloads missing
-HuggingFace models sequentially in a background thread using hf_hub_download.
-Files are symlinked into the models directory (same behaviour as hf_downloads.py).
+On ComfyUI startup, reads /workspace/hf_models.toml and queues missing
+HuggingFace models into the existing HF Downloader download pipeline via
+asyncio.run_coroutine_threadsafe. The actual downloading uses exactly the
+same mechanism as manual downloads from the UI (HFDownloader.download_and_merge).
 """
 
+import asyncio
 import os
 import re
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -51,46 +52,9 @@ def _category_enabled(category: str) -> bool:
     return False
 
 
-def _worker(items: list, models_dir: str) -> None:
-    try:
-        from huggingface_hub import hf_hub_download, login
-    except ImportError:
-        print("[HF Downloader Startup] huggingface_hub not available")
-        return
-
-    hf_token = os.environ.get("HF_TOKEN")
-    if hf_token:
-        try:
-            login(token=hf_token)
-        except Exception as e:
-            print(f"[HF Downloader Startup] Warning: HF login failed: {e}")
-
-    print(f"[HF Downloader Startup] Downloading {len(items)} HF models in background...")
-    for item in items:
-        target_path = Path(models_dir) / item["target_rel_path"]
-
-        if target_path.exists():
-            continue  # Already present (follows symlinks), silent skip
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            print(f"[HF Downloader Startup] Downloading: {item['target_rel_path']}")
-            cached_path = hf_hub_download(
-                repo_id=item["repo_id"],
-                filename=item["repo_path"],
-                token=hf_token,
-                resume_download=True,
-            )
-            # Symlink from models dir into HF cache (same as hf_downloads.py)
-            if target_path.is_symlink():
-                target_path.unlink()
-            target_path.symlink_to(cached_path)
-            print(f"[HF Downloader Startup] Done: {item['target_rel_path']}")
-        except Exception as e:
-            print(f"[HF Downloader Startup] Failed: {item['target_rel_path']}: {e}")
-
-    print("[HF Downloader Startup] All HF background downloads complete.")
+def _task_id(item: dict) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{item['repo_id']}_{item['repo_path']}")
+    return f"hf_startup_{safe}"
 
 
 def start_background_downloads() -> None:
@@ -139,10 +103,69 @@ def start_background_downloads() -> None:
         print("[HF Downloader Startup] Could not get models_dir from folder_paths.")
         return
 
-    thread = threading.Thread(
-        target=_worker,
-        args=(items, models_dir),
-        daemon=True,
-        name="hf-startup-downloads",
-    )
-    thread.start()
+    try:
+        from .server_routes import download_tasks, download_progress, run_download_task
+        import server
+        loop = server.PromptServer.instance.loop
+    except Exception as e:
+        print(f"[HF Downloader Startup] Could not access download infrastructure: {e}")
+        return
+
+    queued = 0
+    for item in items:
+        target_path = Path(models_dir) / item["target_rel_path"]
+        if target_path.exists():
+            continue
+
+        # Decompose repo_path into folder_path (dir within repo) + filename
+        repo_path = item["repo_path"]
+        if "/" in repo_path:
+            folder_path, filename = repo_path.rsplit("/", 1)
+        else:
+            folder_path, filename = "root", repo_path
+
+        # Decompose target_rel_path into output_dir + output_name (stem)
+        target_rel = item["target_rel_path"]
+        if "/" in target_rel:
+            target_dir, target_filename = target_rel.rsplit("/", 1)
+            output_dir = str(Path(models_dir) / target_dir)
+        else:
+            output_dir = str(models_dir)
+            target_filename = target_rel
+        output_name = Path(target_filename).stem
+
+        task_id = _task_id(item)
+        name = item["target_rel_path"]
+
+        # Pre-register as queued so the Status tab shows the full list upfront
+        download_progress[task_id] = {
+            "status": "queued",
+            "stage": "queued",
+            "current": 0,
+            "total": 0,
+            "message": "Waiting to download...",
+            "name": name,
+            "is_startup": True,
+        }
+
+        # Schedule via the existing download pipeline — same path as UI downloads
+        future = asyncio.run_coroutine_threadsafe(
+            run_download_task(
+                task_id=task_id,
+                repo_id=item["repo_id"],
+                model_path=folder_path,
+                files=[filename],
+                output_dir=output_dir,
+                output_name=output_name,
+                name=name,
+            ),
+            loop,
+        )
+        download_tasks[task_id] = future
+        queued += 1
+        print(f"[HF Downloader Startup] Queued: {name}")
+
+    if queued:
+        print(f"[HF Downloader Startup] {queued} model(s) queued for background download.")
+    else:
+        print("[HF Downloader Startup] All models already present, nothing to download.")
