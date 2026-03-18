@@ -52,6 +52,20 @@ def _category_enabled(category: str) -> bool:
     return False
 
 
+_SPLIT_RE = re.compile(r"^(.+?)-(\d+)-of-(\d+)\.safetensors$", re.IGNORECASE)
+
+
+def _expand_split_shards(filename: str) -> list[str]:
+    """If *filename* matches the split pattern (e.g. model-00001-of-00003.safetensors),
+    return the full list of shard filenames.  Otherwise return [filename] unchanged."""
+    m = _SPLIT_RE.match(filename)
+    if not m:
+        return [filename]
+    base, _, total = m.group(1), int(m.group(2)), int(m.group(3))
+    width = len(m.group(3))  # preserve zero-padding width
+    return [f"{base}-{i:0{width}d}-of-{total:0{width}d}.safetensors" for i in range(1, total + 1)]
+
+
 def _task_id(item: dict) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{item['repo_id']}_{item['repo_path']}")
     return f"hf_startup_{safe}"
@@ -154,7 +168,7 @@ def start_background_downloads() -> None:
                 task_id=task_id,
                 repo_id=item["repo_id"],
                 model_path=folder_path,
-                files=[filename],
+                files=_expand_split_shards(filename),
                 output_dir=output_dir,
                 output_name=output_name,
                 name=name,
