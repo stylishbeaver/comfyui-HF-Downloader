@@ -71,24 +71,36 @@ class TestExpandSplitShards:
 class TestStartupOrdering:
     """Test staged startup ordering for practical first-use downloads."""
 
-    def test_loras_are_queued_after_first_base_seed(self):
+    def test_first_use_order_is_explicit(self):
         items = [
+            {
+                "repo_id": "org/wan",
+                "repo_path": "wan.safetensors",
+                "target_rel_path": "diffusion_models/wan.safetensors",
+                "category": "WAN2_2",
+            },
             {
                 "repo_id": "org/base-a",
                 "repo_path": "base-a.safetensors",
-                "target_rel_path": "diffusion_models/base-a.safetensors",
+                "target_rel_path": "diffusion_models/ZImageTurbo/base-a.safetensors",
                 "category": "Z_IMAGE_TURBO",
+            },
+            {
+                "repo_id": "org/vae",
+                "repo_path": "ae.safetensors",
+                "target_rel_path": "vae/ae.safetensors",
+                "category": "Z_IMAGE_TURBO",
+            },
+            {
+                "repo_id": "org/klein",
+                "repo_path": "flux-2-klein-9b.safetensors",
+                "target_rel_path": "diffusion_models/flux-2-klein-9b.safetensors",
+                "category": "FLUX_KLEIN",
             },
             {
                 "repo_id": "org/text",
-                "repo_path": "text.safetensors",
-                "target_rel_path": "text_encoders/text.safetensors",
-                "category": "Z_IMAGE_TURBO",
-            },
-            {
-                "repo_id": "org/second-base",
-                "repo_path": "second-base.safetensors",
-                "target_rel_path": "diffusion_models/second-base.safetensors",
+                "repo_path": "qwen-4b-zimage-hereticV2.safetensors",
+                "target_rel_path": "text_encoders/qwen-4b-zimage-hereticV2.safetensors",
                 "category": "Z_IMAGE_TURBO",
             },
             {
@@ -102,9 +114,11 @@ class TestStartupOrdering:
         result = _assign_startup_stages(items)
 
         assert [item["target_rel_path"] for item in result] == [
-            "diffusion_models/base-a.safetensors",
+            "vae/ae.safetensors",
+            "diffusion_models/ZImageTurbo/base-a.safetensors",
+            "diffusion_models/flux-2-klein-9b.safetensors",
+            "text_encoders/qwen-4b-zimage-hereticV2.safetensors",
             "loras/style.safetensors",
-            "text_encoders/text.safetensors",
-            "diffusion_models/second-base.safetensors",
+            "diffusion_models/wan.safetensors",
         ]
-        assert [item["_startup_stage"] for item in result] == [0, 10, 20, 30]
+        assert [item["_startup_stage"] for item in result] == [0, 10, 20, 30, 40, 80]
