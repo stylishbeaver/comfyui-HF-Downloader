@@ -16,6 +16,10 @@ from typing import Optional
 TOML_PATH = "/workspace/hf_models.toml"
 SKIP_ENV = "SKIP_MODEL_DOWNLOADS"
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+STARTUP_CONCURRENCY_ENV = "HF_STARTUP_MAX_CONCURRENT"
+BASE_MODEL_PATHS = {"diffusion_models", "checkpoints"}
+LORA_MODEL_PATHS = {"loras", "lora", "locon", "lycoris"}
+SUPPORT_MODEL_PATHS = {"text_encoders", "vae", "clip", "clip_vision", "controlnet", "model_patches"}
 
 
 def _should_skip() -> bool:
@@ -42,7 +46,7 @@ def _parse_toml(path: str) -> Optional[dict]:
 def _category_enabled(category: str) -> bool:
     if not category:
         return True
-    categories = [c.strip() for c in category.split(",") if c.strip()]
+    categories = _category_names(category)
     if not categories:
         return True
     for cat in categories:
@@ -50,6 +54,69 @@ def _category_enabled(category: str) -> bool:
         if os.environ.get(env_var, "").strip().lower() in TRUE_VALUES:
             return True
     return False
+
+
+def _category_names(category: str) -> list[str]:
+    return [c.strip() for c in category.split(",") if c.strip()]
+
+
+def _target_group(target_rel_path: str) -> str:
+    return target_rel_path.strip().strip("/").split("/", 1)[0].lower()
+
+
+def _startup_concurrency() -> int:
+    try:
+        return max(1, int(os.environ.get(STARTUP_CONCURRENCY_ENV, "3")))
+    except (TypeError, ValueError):
+        print(f"[HF Downloader Startup] Invalid {STARTUP_CONCURRENCY_ENV}; using 3.")
+        return 3
+
+
+def _coerce_startup_priority(value) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        print(f"[HF Downloader Startup] Ignoring invalid startup_priority: {value!r}")
+        return None
+
+
+def _assign_startup_stages(items: list[dict]) -> list[dict]:
+    """Queue one base/checkpoint seed per category, then LoRAs, then the backlog."""
+    seeded_categories: set[str] = set()
+    ordered_items = []
+
+    for index, item in enumerate(items):
+        group = _target_group(item["target_rel_path"])
+        category_names = _category_names(item.get("category", ""))
+        category_keys = category_names or [f"__always__:{group}"]
+
+        startup_priority = _coerce_startup_priority(item.get("startup_priority"))
+        if startup_priority is not None:
+            stage = startup_priority
+        elif group in BASE_MODEL_PATHS:
+            unseeded = [cat for cat in category_keys if cat not in seeded_categories]
+            if unseeded:
+                stage = 0
+                seeded_categories.update(unseeded)
+            else:
+                stage = 30
+        elif group in LORA_MODEL_PATHS:
+            stage = 10
+        elif group in SUPPORT_MODEL_PATHS:
+            stage = 20
+        elif group == "upscale_models":
+            stage = 40
+        else:
+            stage = 50
+
+        staged_item = dict(item)
+        staged_item["_startup_stage"] = stage
+        staged_item["_startup_index"] = index
+        ordered_items.append(staged_item)
+
+    return sorted(ordered_items, key=lambda item: (item["_startup_stage"], item["_startup_index"]))
 
 
 _SPLIT_RE = re.compile(r"^(.+?)-(\d+)-of-(\d+)\.safetensors$", re.IGNORECASE)
@@ -69,6 +136,29 @@ def _expand_split_shards(filename: str) -> list[str]:
 def _task_id(item: dict) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]", "_", f"{item['repo_id']}_{item['repo_path']}")
     return f"hf_startup_{safe}"
+
+
+async def _run_startup_item(
+    semaphore: asyncio.Semaphore,
+    task_id: str,
+    repo_id: str,
+    model_path: str,
+    files: list[str],
+    output_dir: str,
+    output_name: str,
+    name: str,
+    run_download_task,
+) -> None:
+    async with semaphore:
+        await run_download_task(
+            task_id=task_id,
+            repo_id=repo_id,
+            model_path=model_path,
+            files=files,
+            output_dir=output_dir,
+            output_name=output_name,
+            name=name,
+        )
 
 
 def start_background_downloads() -> None:
@@ -104,6 +194,8 @@ def start_background_downloads() -> None:
             "repo_id": repo_id,
             "repo_path": repo_path,
             "target_rel_path": target_rel_path,
+            "category": category,
+            "startup_priority": entry.get("startup_priority"),
         })
 
     if not items:
@@ -125,7 +217,9 @@ def start_background_downloads() -> None:
         print(f"[HF Downloader Startup] Could not access download infrastructure: {e}")
         return
 
+    items = _assign_startup_stages(items)
     queued = 0
+    semaphore = asyncio.Semaphore(_startup_concurrency())
     for item in items:
         target_path = Path(models_dir) / item["target_rel_path"]
         if target_path.exists():
@@ -162,9 +256,11 @@ def start_background_downloads() -> None:
             "is_startup": True,
         }
 
-        # Schedule via the existing download pipeline — same path as UI downloads
+        # Schedule through the existing download pipeline, but gate startup jobs
+        # through a small FIFO semaphore so the sorted startup order matters.
         future = asyncio.run_coroutine_threadsafe(
-            run_download_task(
+            _run_startup_item(
+                semaphore=semaphore,
                 task_id=task_id,
                 repo_id=item["repo_id"],
                 model_path=folder_path,
@@ -172,6 +268,7 @@ def start_background_downloads() -> None:
                 output_dir=output_dir,
                 output_name=output_name,
                 name=name,
+                run_download_task=run_download_task,
             ),
             loop,
         )

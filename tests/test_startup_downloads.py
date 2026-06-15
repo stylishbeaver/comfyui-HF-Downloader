@@ -4,7 +4,7 @@ Tests for startup_downloads split file expansion.
 
 import pytest
 
-from startup_downloads import _expand_split_shards
+from startup_downloads import _assign_startup_stages, _expand_split_shards
 
 
 class TestExpandSplitShards:
@@ -66,3 +66,45 @@ class TestExpandSplitShards:
         """Edge case: 00001-of-00001 is technically a split pattern but returns one file."""
         result = _expand_split_shards("model-00001-of-00001.safetensors")
         assert result == ["model-00001-of-00001.safetensors"]
+
+
+class TestStartupOrdering:
+    """Test staged startup ordering for practical first-use downloads."""
+
+    def test_loras_are_queued_after_first_base_seed(self):
+        items = [
+            {
+                "repo_id": "org/base-a",
+                "repo_path": "base-a.safetensors",
+                "target_rel_path": "diffusion_models/base-a.safetensors",
+                "category": "Z_IMAGE_TURBO",
+            },
+            {
+                "repo_id": "org/text",
+                "repo_path": "text.safetensors",
+                "target_rel_path": "text_encoders/text.safetensors",
+                "category": "Z_IMAGE_TURBO",
+            },
+            {
+                "repo_id": "org/second-base",
+                "repo_path": "second-base.safetensors",
+                "target_rel_path": "diffusion_models/second-base.safetensors",
+                "category": "Z_IMAGE_TURBO",
+            },
+            {
+                "repo_id": "org/lora",
+                "repo_path": "style.safetensors",
+                "target_rel_path": "loras/style.safetensors",
+                "category": "Z_IMAGE_TURBO",
+            },
+        ]
+
+        result = _assign_startup_stages(items)
+
+        assert [item["target_rel_path"] for item in result] == [
+            "diffusion_models/base-a.safetensors",
+            "loras/style.safetensors",
+            "text_encoders/text.safetensors",
+            "diffusion_models/second-base.safetensors",
+        ]
+        assert [item["_startup_stage"] for item in result] == [0, 10, 20, 30]
