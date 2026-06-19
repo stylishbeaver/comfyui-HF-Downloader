@@ -251,7 +251,6 @@ async def _run_startup_queue(items: list[dict], download_tasks, run_download_tas
 
     prereqs_marked = False
     loras_marked = False
-    heavy_wait_done = False
 
     try:
         for stage in stage_order:
@@ -263,12 +262,6 @@ async def _run_startup_queue(items: list[dict], download_tasks, run_download_tas
                 if not loras_marked:
                     _write_marker(HF_LORAS_DONE_MARKER)
                     loras_marked = True
-                if not heavy_wait_done:
-                    await _wait_for_markers(
-                        (HF_LORAS_DONE_MARKER, CIVITAI_LORAS_DONE_MARKER),
-                        "all LoRA stages to finish before heavy downloads",
-                    )
-                    heavy_wait_done = True
 
             await _run_stage(stage, stage_items_by_id[stage], semaphore, download_tasks, run_download_task)
 
