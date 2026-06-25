@@ -10,7 +10,6 @@ same mechanism as manual downloads from the UI (HFDownloader.download_and_merge)
 import asyncio
 import os
 import re
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -18,18 +17,12 @@ TOML_PATH = "/workspace/hf_models.toml"
 SKIP_ENV = "SKIP_MODEL_DOWNLOADS"
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 STARTUP_CONCURRENCY_ENV = "HF_STARTUP_MAX_CONCURRENT"
-STAGE_DIR_ENV = "MODEL_DOWNLOAD_STAGE_DIR"
-DEFAULT_STAGE_DIR = "/tmp/comfyui-model-download-stages/default"
-HF_PREREQS_DONE_MARKER = "hf-prereqs.done"
-HF_LORAS_DONE_MARKER = "hf-loras.done"
-CIVITAI_LORAS_DONE_MARKER = "civitai-loras.done"
-VAE_STAGE = 0
-Z_IMAGE_TURBO_STAGE = 10
-FLUX_KLEIN_9B_STAGE = 20
-HERETIC_TEXT_ENCODER_STAGE = 30
+PREREQ_STAGE = 5       # text encoders, VAEs — needed before anything can run
+BASE_MODEL_STAGE = 10  # diffusion models
 LORA_STAGE = 40
 HEAVY_STAGE = 80
 LORA_MODEL_PATHS = {"loras", "lora", "locon", "lycoris"}
+PREREQ_GROUPS = {"text_encoders", "vae"}
 
 
 def _should_skip() -> bool:
@@ -70,14 +63,6 @@ def _category_names(category: str) -> list[str]:
     return [c.strip() for c in category.split(",") if c.strip()]
 
 
-def _target_group(target_rel_path: str) -> str:
-    return target_rel_path.strip().strip("/").split("/", 1)[0].lower()
-
-
-def _has_category(item: dict, category: str) -> bool:
-    return category in _category_names(item.get("category", ""))
-
-
 def _startup_concurrency() -> int:
     try:
         return max(1, int(os.environ.get(STARTUP_CONCURRENCY_ENV, "3")))
@@ -96,65 +81,27 @@ def _coerce_startup_priority(value) -> Optional[int]:
         return None
 
 
-def _stage_dir() -> Path:
-    path = Path(os.environ.get(STAGE_DIR_ENV, DEFAULT_STAGE_DIR))
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _write_marker(name: str) -> None:
-    try:
-        marker = _stage_dir() / name
-        marker.write_text(str(time.time()), encoding="utf-8")
-        print(f"[HF Downloader Startup] Stage marker ready: {marker}")
-    except Exception as e:
-        print(f"[HF Downloader Startup] Could not write stage marker {name}: {e}")
-
-
-async def _wait_for_markers(names: tuple[str, ...], label: str) -> None:
-    missing_logged = ""
-    while True:
-        missing = [name for name in names if not (_stage_dir() / name).exists()]
-        if not missing:
-            return
-        missing_text = ", ".join(missing)
-        if missing_text != missing_logged:
-            print(f"[HF Downloader Startup] Waiting for {label}: {missing_text}")
-            missing_logged = missing_text
-        await asyncio.sleep(5)
-
-
 def _assign_startup_stages(items: list[dict]) -> list[dict]:
-    """Apply the first-use order: VAE, core bases, heretic text encoders, LoRAs, then the backlog."""
+    """Order by path group: prereqs → base models → LoRAs → everything else.
+    Individual entries can override with startup_priority in the TOML."""
     ordered_items = []
-
     for index, item in enumerate(items):
-        rel_path = item["target_rel_path"].strip().strip("/").lower()
-        repo_path = item["repo_path"].strip().strip("/").lower()
-        path_text = f"{rel_path} {repo_path}"
-        group = _target_group(item["target_rel_path"])
-
+        group = item["target_rel_path"].strip().strip("/").split("/", 1)[0].lower()
         startup_priority = _coerce_startup_priority(item.get("startup_priority"))
         if startup_priority is not None:
             stage = startup_priority
-        elif group == "vae":
-            stage = VAE_STAGE
-        elif group == "diffusion_models" and _has_category(item, "Z_IMAGE_TURBO"):
-            stage = Z_IMAGE_TURBO_STAGE
-        elif group == "diffusion_models" and _has_category(item, "FLUX_KLEIN") and "9b" in path_text:
-            stage = FLUX_KLEIN_9B_STAGE
-        elif group == "text_encoders" and ("heretic" in path_text or "abliterated" in path_text):
-            stage = HERETIC_TEXT_ENCODER_STAGE
+        elif group in PREREQ_GROUPS:
+            stage = PREREQ_STAGE
+        elif group == "diffusion_models":
+            stage = BASE_MODEL_STAGE
         elif group in LORA_MODEL_PATHS:
             stage = LORA_STAGE
         else:
             stage = HEAVY_STAGE
-
         staged_item = dict(item)
         staged_item["_startup_stage"] = stage
         staged_item["_startup_index"] = index
         ordered_items.append(staged_item)
-
     return sorted(ordered_items, key=lambda item: (item["_startup_stage"], item["_startup_index"]))
 
 
@@ -162,13 +109,13 @@ _SPLIT_RE = re.compile(r"^(.+?)-(\d+)-of-(\d+)\.safetensors$", re.IGNORECASE)
 
 
 def _expand_split_shards(filename: str) -> list[str]:
-    """If *filename* matches the split pattern (e.g. model-00001-of-00003.safetensors),
-    return the full list of shard filenames.  Otherwise return [filename] unchanged."""
+    """If filename matches the split pattern (e.g. model-00001-of-00003.safetensors),
+    return the full list of shard filenames. Otherwise return [filename] unchanged."""
     m = _SPLIT_RE.match(filename)
     if not m:
         return [filename]
     base, _, total = m.group(1), int(m.group(2)), int(m.group(3))
-    width = len(m.group(3))  # preserve zero-padding width
+    width = len(m.group(3))
     return [f"{base}-{i:0{width}d}-of-{total:0{width}d}.safetensors" for i in range(1, total + 1)]
 
 
@@ -179,14 +126,12 @@ def _task_id(item: dict) -> str:
 
 def _stage_label(stage: int) -> str:
     labels = {
-        VAE_STAGE: "VAEs",
-        Z_IMAGE_TURBO_STAGE: "Z-Image Turbo core",
-        FLUX_KLEIN_9B_STAGE: "Flux/Klein 9B core",
-        HERETIC_TEXT_ENCODER_STAGE: "heretic text encoders",
+        PREREQ_STAGE: "text encoders / VAEs",
+        BASE_MODEL_STAGE: "base diffusion models",
         LORA_STAGE: "LoRAs",
-        HEAVY_STAGE: "remaining heavy models",
+        HEAVY_STAGE: "remaining models",
     }
-    return labels.get(stage, f"custom priority {stage}")
+    return labels.get(stage, f"priority {stage}")
 
 
 async def _run_startup_item(
@@ -249,60 +194,25 @@ async def _run_startup_queue(items: list[dict], download_tasks, run_download_tas
             stage_items_by_id[stage] = []
         stage_items_by_id[stage].append(item)
 
-    prereqs_marked = False
-    loras_marked = False
-
-    try:
-        for stage in stage_order:
-            if stage >= LORA_STAGE and not prereqs_marked:
-                _write_marker(HF_PREREQS_DONE_MARKER)
-                prereqs_marked = True
-
-            if stage > LORA_STAGE:
-                if not loras_marked:
-                    _write_marker(HF_LORAS_DONE_MARKER)
-                    loras_marked = True
-
-            await _run_stage(stage, stage_items_by_id[stage], semaphore, download_tasks, run_download_task)
-
-            if stage == LORA_STAGE and not loras_marked:
-                _write_marker(HF_LORAS_DONE_MARKER)
-                loras_marked = True
-
-        if not prereqs_marked:
-            _write_marker(HF_PREREQS_DONE_MARKER)
-        if not loras_marked:
-            _write_marker(HF_LORAS_DONE_MARKER)
-    except Exception as e:
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
-        print(f"[HF Downloader Startup] Startup queue coordinator failed: {e}")
-        raise
+    for stage in stage_order:
+        await _run_stage(stage, stage_items_by_id[stage], semaphore, download_tasks, run_download_task)
 
 
 def start_background_downloads() -> None:
     if _should_skip():
         print("[HF Downloader Startup] SKIP_MODEL_DOWNLOADS set, skipping.")
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     if not os.path.exists(TOML_PATH):
         print(f"[HF Downloader Startup] No config at {TOML_PATH}, skipping.")
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     data = _parse_toml(TOML_PATH)
     if not data:
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     all_items = data.get("model", [])
     if not isinstance(all_items, list):
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     items = []
@@ -327,8 +237,6 @@ def start_background_downloads() -> None:
 
     if not items:
         print("[HF Downloader Startup] No HF models to download.")
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     try:
@@ -336,8 +244,6 @@ def start_background_downloads() -> None:
         models_dir = folder_paths.models_dir
     except Exception:
         print("[HF Downloader Startup] Could not get models_dir from folder_paths.")
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     try:
@@ -346,8 +252,6 @@ def start_background_downloads() -> None:
         loop = server.PromptServer.instance.loop
     except Exception as e:
         print(f"[HF Downloader Startup] Could not access download infrastructure: {e}")
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         return
 
     items = _assign_startup_stages(items)
@@ -357,14 +261,12 @@ def start_background_downloads() -> None:
         if target_path.exists():
             continue
 
-        # Decompose repo_path into folder_path (dir within repo) + filename
         repo_path = item["repo_path"]
         if "/" in repo_path:
             folder_path, filename = repo_path.rsplit("/", 1)
         else:
             folder_path, filename = "root", repo_path
 
-        # Decompose target_rel_path into output_dir + output_name (stem)
         target_rel = item["target_rel_path"]
         if "/" in target_rel:
             target_dir, target_filename = target_rel.rsplit("/", 1)
@@ -377,7 +279,6 @@ def start_background_downloads() -> None:
         task_id = _task_id(item)
         name = item["target_rel_path"]
 
-        # Pre-register as queued so the Status tab shows the full list upfront
         download_progress[task_id] = {
             "status": "queued",
             "stage": "queued",
@@ -408,6 +309,4 @@ def start_background_downloads() -> None:
         download_tasks["hf_startup_coordinator"] = future
         print(f"[HF Downloader Startup] {len(queued_items)} model(s) queued for staged background download.")
     else:
-        _write_marker(HF_PREREQS_DONE_MARKER)
-        _write_marker(HF_LORAS_DONE_MARKER)
         print("[HF Downloader Startup] All models already present, nothing to download.")
